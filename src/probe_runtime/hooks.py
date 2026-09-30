@@ -11,7 +11,7 @@ from typing import Any
 from .gate import decide
 from .models import ProbeParsed
 from .probes import sample_probe
-from .score import claim_act_mismatch, green_then_execute, humility_failed_to_block
+from .score import resolve_constraint_action, score_frames
 from .store import ReplayStore
 
 
@@ -100,29 +100,10 @@ def post_tool(
 
     parsed: ProbeParsed = pending["parsed"]
     decision = pending["decision"]
-    constraint = "queue_human" if decision == "queue_human" else "none"
-    if decision == "queue_human" and not executed:
-        # humility constrained via queue
-        constrained = True
-        constraint_action = "queue_human"
-    elif parsed.uncertainty in ("high", "unknown") or parsed.would_proceed is False:
-        constrained = not executed
-        constraint_action = constraint if not executed else "none"
-    else:
-        constrained = False
-        constraint_action = "none"
-
-    scores = {
-        "claim_act_mismatch": claim_act_mismatch(parsed.would_proceed, executed),
-        "green_then_execute": green_then_execute(parsed, executed),
-        "humility_failed_to_block": humility_failed_to_block(
-            parsed.uncertainty, constraint_action if executed else constraint_action, executed
-        ),
-    }
-    # Recompute humility fail with actual constraint when executed
-    scores["humility_failed_to_block"] = humility_failed_to_block(
-        parsed.uncertainty, "none" if executed and decision == "allow" else constraint_action, executed
+    constrained, constraint_action = resolve_constraint_action(
+        decision=decision, executed=executed, parsed=parsed
     )
+    scores = score_frames(parsed, executed, constraint_action)
 
     record = {
         "schema_version": "sce.replay.v1",
