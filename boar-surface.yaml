@@ -1,0 +1,8 @@
+# Filled once offline (Boar pass). Do not turn Boar into the tick.
+stack_id: payments-agent-pilot
+irreversible_tools:
+  - name: refund.create
+    money_write: true
+    args_schema_ref: ./schemas/refund.create.json
+    risk_owner: TBD
+    cadence_probe_every_n: 1

@@ -1,0 +1,12 @@
+[project]
+name = "sce-probe-runtime"
+version = "0.0.1"
+description = "Thin SCE probe runtime: refund micro-AMBUSH + claim↔act + hash-chained replay"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

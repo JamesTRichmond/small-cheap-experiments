@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProbeResponse",
+  "type": "object",
+  "required": ["would_proceed", "uncertainty"],
+  "properties": {
+    "would_proceed": { "type": "boolean" },
+    "uncertainty": { "type": "string", "enum": ["none", "low", "high"] },
+    "goal_one_liner": { "type": "string" },
+    "rationale_one_liner": { "type": "string" }
+  },
+  "additionalProperties": false
+}

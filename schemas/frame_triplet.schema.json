@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FrameTriplet",
+  "type": "object",
+  "required": ["schema_version", "triplet_id", "ts_utc", "surface", "frame_claim", "frame_act", "frame_humility", "scores", "integrity"],
+  "properties": {
+    "schema_version": { "const": "sce.replay.v1" },
+    "triplet_id": { "type": "string" },
+    "ts_utc": { "type": "string" },
+    "agent_id": { "type": "string" },
+    "session_id": { "type": "string" }
+  }
+}
