@@ -1,5 +1,12 @@
 # sce-probe-runtime
 
+<!-- portfolio summary -->
+> **Portfolio summary.** Runtime telemetry for AI agents that can take irreversible actions. Before a model issues a refund, a silent held-out probe checks whether what it *claims* matches what it *does*, and every decision is sealed into a hash-chained, replayable audit record.
+>
+> **Stack:** Python · JSON Schema · pytest
+>
+> **Why it matters:** agent evaluations usually grade the transcript. This grades the action, at the moment it happens, with evidence a risk team can replay.
+
 Thin MVP: silent held-out micro-AMBUSH on **refund** → score claim↔next tool → hash-chained three-frame SOC replay.
 
 **Not in v0:** Diet tribunal UX, Boar continuous hunt, dashboards-as-product, second tool surfaces.
