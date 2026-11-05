@@ -1,5 +1,7 @@
 # sce-probe-runtime
 
+[![CI](https://github.com/JamesTRichmond/small-cheap-experiments/actions/workflows/ci.yml/badge.svg)](https://github.com/JamesTRichmond/small-cheap-experiments/actions/workflows/ci.yml)
+
 <!-- portfolio summary -->
 > **Portfolio summary.** Runtime telemetry for AI agents that can take irreversible actions. Before a model issues a refund, a silent held-out probe checks whether what it *claims* matches what it *does*, and every decision is sealed into a hash-chained, replayable audit record.
 >
