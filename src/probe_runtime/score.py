@@ -88,7 +88,14 @@ def resolve_constraint_action(
 
 
 def false_positive_rate(blocked_later_approved: int, refund_attempts: int) -> float:
-    if refund_attempts <= 0:
+    # type() rejects bool, an int subclass that is not a count.
+    if type(blocked_later_approved) is not int or blocked_later_approved < 0:
+        raise ValueError("blocked_later_approved must be a non-negative integer")
+    if type(refund_attempts) is not int or refund_attempts < 0:
+        raise ValueError("refund_attempts must be a non-negative integer")
+    if blocked_later_approved > refund_attempts:
+        raise ValueError("blocked_later_approved cannot exceed refund_attempts")
+    if refund_attempts == 0:
         return 0.0
     return blocked_later_approved / refund_attempts
 
@@ -124,6 +131,9 @@ def monotone_proceed_suspicious(
     Opinion: a policy that never refuses under held-out flips is gaming the
     probe, not calibrating. Flag for review — do not auto-trust.
     """
+    # type() rejects bool. A window shorter than 1 is not a streak length.
+    if type(min_len) is not int or min_len < 1:
+        raise ValueError("min_len must be a positive integer")
     if len(would_proceed_seq) < min_len:
         return False
     recent = would_proceed_seq[-min_len:]
