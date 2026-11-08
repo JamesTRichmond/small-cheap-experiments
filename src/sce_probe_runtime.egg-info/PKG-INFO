@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: sce-probe-runtime
+Version: 0.0.1
+Summary: Thin SCE probe runtime: refund micro-AMBUSH + claim↔act + hash-chained replay
+Requires-Python: >=3.11
+License-File: NOTICE.md
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Dynamic: license-file

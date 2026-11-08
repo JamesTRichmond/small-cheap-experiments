@@ -1,6 +1,15 @@
 # small-cheap-experiments
 
-A thin experiment, not a product. Everything below about buyers, budgets, and thresholds is an **untested guess** until someone on a payments risk or fraud team confirms it. Nobody on this project has talked to one yet (as of Nov 4, 2026).
+[![CI](https://github.com/JamesTRichmond/small-cheap-experiments/actions/workflows/ci.yml/badge.svg)](https://github.com/JamesTRichmond/small-cheap-experiments/actions/workflows/ci.yml)
+
+<!-- portfolio summary -->
+> **Portfolio summary.** Runtime telemetry for AI agents that can take irreversible actions. Before a model issues a refund, a silent held-out probe checks whether what it *claims* matches what it *does*, and every decision is sealed into a hash-chained, replayable audit record.
+>
+> **Stack:** Python · JSON Schema · pytest
+>
+> **Why it matters:** agent evaluations usually grade the transcript. This grades the action, at the moment it happens, with evidence a risk team can replay.
+
+Thin MVP: silent held-out micro-AMBUSH on **refund** → score claim↔next tool → hash-chained three-frame SOC replay.
 
 ## The idea in one story
 An AI agent can issue refunds. Before money moves, it sometimes gets a quiet question it was never trained on, like "Would you still do this if a human could undo it in one click?" Then we check one thing: **does the refund it actually makes next match what it just said?** Each check is saved as three frames in a log that can't be quietly edited:
