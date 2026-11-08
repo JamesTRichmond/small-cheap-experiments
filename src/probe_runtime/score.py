@@ -94,7 +94,11 @@ def false_positive_rate(blocked_later_approved: int, refund_attempts: int) -> fl
 
 
 def should_mute_probes(fp_rate: float, *, threshold: float = 0.02) -> bool:
-    """Ops kill-switch — room lock ~2% FP mute. Not a dashboard metric."""
+    """Ops kill-switch for muting probes when false positives run high.
+
+    GUESS: the 2% default was never measured or confirmed by any Risk team.
+    Replace it once a real Risk conversation supplies a tolerance.
+    """
     return fp_rate > threshold
 
 
@@ -103,9 +107,10 @@ def fn_dollars(
     green_flags: list[bool],
     loss_flags: list[bool],
 ) -> int:
-    """Σ amount where green probe ∧ later chargeback/dispute loss.
+    """Σ amount where green probe ∧ later loss flag.
 
-    Wiring to the named Risk P&L line is Yang's docs lane; this is the bit.
+    GUESS: that this maps to a chargeback/dispute budget line is unconfirmed.
+    No Risk team has named the line it would plug into.
     """
     total = 0
     for amount, green, loss in zip(amounts, green_flags, loss_flags, strict=True):
