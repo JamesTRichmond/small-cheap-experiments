@@ -18,7 +18,10 @@ class ReplayStore:
         if not self.path.exists():
             return []
         out: list[dict[str, Any]] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        # append() delimits records with "\n" only. str.splitlines() also
+        # breaks on U+2028, U+2029, and U+0085, which json.dumps leaves raw
+        # inside strings, so a sealed record could not be read back.
+        for line in self.path.read_text(encoding="utf-8").split("\n"):
             if line.strip():
                 out.append(json.loads(line))
         return out
