@@ -5,9 +5,11 @@ agent said, what refund call it made, whether stated doubt stopped anything,
 and a verdict. Three labeled lines follow: structural validity, integrity,
 and the claim-versus-act result.
 
-This module does not recompute hashes. hash_chain.verify_chain is a chain
-check, and a single record is not a chain. The integrity line stays
-"not verified" until a caller passes a status it actually checked.
+format_triplet does not recompute a hash. Its integrity line stays
+"not verified" unless the caller passes a status. The JSONL command
+checks the chain with hash_chain.verify_chain and record_hash, then
+passes that status in. verify_chain returns only a bool, so the command
+names the broken record itself.
 
 It also does not score the claim against the act. PR #13 adds
 claim_act_verdict on a branch that is not merged, so this file does not
@@ -22,8 +24,12 @@ timestamps, and a missing, naive, or malformed value is shown as stored.
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+from .hash_chain import GENESIS, record_hash, verify_chain
 
 _SCHEMA_VERSION = "sce.replay.v1"
 _MISSING = object()
@@ -39,8 +45,17 @@ _VERDICT_DISPLAY = {
 _VERDICT_KEYS = ("claim_act_verdict", "verdict")
 
 
-def format_triplet(record: Any, *, include_raw_json: bool = False) -> str:
-    """Render one serialized FrameTriplet. Malformed input is a labeled line."""
+def format_triplet(
+    record: Any,
+    *,
+    include_raw_json: bool = False,
+    integrity_status: str | None = None,
+) -> str:
+    """Render one serialized FrameTriplet. Malformed input is a labeled line.
+
+    integrity_status is set only by the chain command after it has checked
+    the hash. Left unset, this function does not recompute a hash.
+    """
     if not isinstance(record, dict):
         lines = [
             f"Malformed record: expected a JSON object, got {type(record).__name__}."
@@ -64,7 +79,11 @@ def format_triplet(record: Any, *, include_raw_json: bool = False) -> str:
         _verdict_line(result),
         "",
         _structural_line(record),
-        _integrity_line(record),
+        (
+            f"Integrity: {integrity_status}"
+            if integrity_status is not None
+            else _integrity_line(record)
+        ),
         f"Claim vs act: {result}",
     ]
     if include_raw_json:
@@ -333,3 +352,159 @@ def _raw_json_block(record: Any) -> str:
     except (TypeError, ValueError):
         return "Raw JSON: unavailable (value is not JSON)"
     return "Raw JSON:\n" + dumped
+
+
+class _BadLine:
+    """A JSONL slot that is not one JSON object."""
+
+    def __init__(self, line_no: int, reason: str) -> None:
+        self.line_no = line_no
+        self.reason = reason
+
+
+def parse_jsonl(text: str) -> list[Any]:
+    """Split on ``\\n`` only, matching the store, and skip blank lines.
+
+    A bad line becomes a labeled slot. It does not raise.
+    """
+    records: list[Any] = []
+    for line_no, line in enumerate(text.split("\n"), start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            records.append(_BadLine(line_no, "not valid JSON"))
+            continue
+        if not isinstance(value, dict):
+            records.append(_BadLine(line_no, "not a JSON object"))
+            continue
+        records.append(value)
+    return records
+
+
+def chain_status(records: list[Any]) -> tuple[str, list[str]]:
+    """Header plus one integrity status per record.
+
+    ``verify_chain`` returns only pass or fail. It does not say which record
+    failed or why. This walk uses the public ``record_hash`` and ``GENESIS``
+    to name the first break. If that walk and ``verify_chain`` disagree, the
+    statuses stay ``not verified`` rather than inventing a reason.
+    """
+    if not records:
+        return "Chain integrity: verified", []
+    broken_at, reason, labels = _walk_chain(records)
+    checked = _verify_chain_bool(records)
+    walk_ok = broken_at is None
+    if checked is True and walk_ok:
+        return "Chain integrity: verified", labels
+    if checked is False and broken_at is not None:
+        return f"Chain integrity: BROKEN at record {broken_at}: {reason}", labels
+    if checked is None and broken_at is not None:
+        # verify_chain cannot take a non-object. The break is still named.
+        return f"Chain integrity: BROKEN at record {broken_at}: {reason}", labels
+    return "Chain integrity: not verified", ["not verified"] * len(records)
+
+
+def _verify_chain_bool(records: list[Any]) -> bool | None:
+    if not all(isinstance(rec, dict) for rec in records):
+        return None
+    try:
+        return verify_chain(records)
+    except (TypeError, ValueError):
+        return None
+
+
+def _walk_chain(records: list[Any]) -> tuple[int | None, str | None, list[str]]:
+    labels: list[str] = []
+    prev = GENESIS
+    broken_at: int | None = None
+    reason: str | None = None
+    for index, rec in enumerate(records, start=1):
+        if broken_at is not None:
+            labels.append("not verified")
+            continue
+        if isinstance(rec, _BadLine):
+            broken_at = index
+            reason = f"line {rec.line_no} is {rec.reason}"
+            labels.append(f"BROKEN at record {index}: {reason}")
+            continue
+        if not isinstance(rec, dict):
+            broken_at = index
+            reason = "record is not a JSON object"
+            labels.append(f"BROKEN at record {index}: {reason}")
+            continue
+        failure = _record_failure(rec, prev)
+        if failure is not None:
+            broken_at = index
+            reason = failure
+            labels.append(f"BROKEN at record {index}: {reason}")
+            continue
+        labels.append("verified")
+        prev = rec["integrity"]["record_hash"]
+    return broken_at, reason, labels
+
+
+def _record_failure(record: dict[str, Any], prev: str) -> str | None:
+    integrity = record.get("integrity")
+    if not isinstance(integrity, dict):
+        return "integrity is missing"
+    if integrity.get("prev_hash") != prev:
+        return "prev_hash does not match the previous record"
+    body = {key: value for key, value in record.items() if key != "integrity"}
+    try:
+        recomputed = record_hash(body, prev)
+    except (TypeError, ValueError):
+        return "record_hash could not be recomputed"
+    if recomputed != integrity.get("record_hash"):
+        return "recomputed record_hash does not match integrity.record_hash"
+    return None
+
+
+def format_chain(records: list[Any], *, include_raw_json: bool = True) -> str:
+    """Render a whole chain. Each record keeps the single-triplet screen."""
+    header, labels = chain_status(records)
+    parts = [header, f"Records: {len(records)}", ""]
+    for index, (rec, label) in enumerate(zip(records, labels), start=1):
+        parts.append(f"--- record {index} ---")
+        if isinstance(rec, dict):
+            rendered = format_triplet(
+                rec, include_raw_json=include_raw_json, integrity_status=label
+            )
+            parts.append(rendered.rstrip("\n"))
+        elif isinstance(rec, _BadLine):
+            parts.append(f"Malformed record: line {rec.line_no} is {rec.reason}.")
+        else:
+            parts.append(
+                f"Malformed record: expected a JSON object, got {type(rec).__name__}."
+            )
+        parts.append("")
+    return "\n".join(parts).rstrip("\n") + "\n"
+
+
+def format_jsonl(text: str, *, include_raw_json: bool = True) -> str:
+    return format_chain(parse_jsonl(text), include_raw_json=include_raw_json)
+
+
+def format_chain_file(path: str | Path, *, include_raw_json: bool = True) -> str:
+    return format_jsonl(Path(path).read_text(encoding="utf-8"), include_raw_json=include_raw_json)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 1:
+        print(
+            "usage: python -m probe_runtime.replay_text <file.jsonl>",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        sys.stdout.write(format_chain_file(args[0]))
+    except (OSError, UnicodeError) as exc:
+        print(f"Malformed record: cannot read file ({exc}).", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
