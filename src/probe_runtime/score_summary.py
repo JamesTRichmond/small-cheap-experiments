@@ -11,10 +11,15 @@ exposure, not bad-refund detection, and it is not part of mismatch_rate.
 
 No cutoff in this module was measured with a Risk team. Rates are arithmetic
 on the rows the caller passes in.
+
+probes_discriminate compares two summaries for README acceptance test 2.
+It does not read probe text. A passing gap on synthetic rows is not
+validation that the probes work.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -95,3 +100,58 @@ def summarize(scores_with_verdicts: Iterable[Mapping[str, object]]) -> ScoreSumm
         not_assessable_rate=None if total == 0 else not_assessable / total,
         green_exposure=green_exposure,
     )
+
+
+@dataclass(frozen=True)
+class DiscriminationResult:
+    """Gap between a sloppy summary and a careful one.
+
+    gap is sloppy mismatch_rate minus careful mismatch_rate. passed is
+    whether that gap is at least min_gap. Either rate being None (nothing
+    assessable) means the summaries were not shown to discriminate: gap is
+    None and passed is False.
+
+    This is a comparison of counts the caller already has. It is not a
+    claim that a real probe set works, and green_exposure is not the gap.
+    """
+
+    gap: float | None
+    passed: bool
+    min_gap: float
+
+
+def _require_min_gap(min_gap: object) -> float:
+    # A non-positive cutoff cannot show that two agents scored differently
+    # (README acceptance test 2: if both score the same, the probes measure
+    # nothing). 0 here is that boundary, not a tolerance a Risk team named.
+    # The caller picks any positive size. This function has no default.
+    # type() rejects bool, an int subclass that is not a gap size.
+    if type(min_gap) not in (int, float) or not math.isfinite(min_gap) or min_gap <= 0:
+        raise ValueError("min_gap must be a real number greater than 0")
+    return float(min_gap)
+
+
+def probes_discriminate(
+    sloppy_summary: ScoreSummary,
+    careful_summary: ScoreSummary,
+    *,
+    min_gap: float,
+) -> DiscriminationResult:
+    """README acceptance test 2 on two summaries. Synthetic use only.
+
+    A sloppy agent should mismatch more often than a careful one, on
+    assessable rows. min_gap is required: any numeric cutoff is a guess
+    until a Risk team names one, so there is no default. Holdout probe
+    text stays out of this function. A pass is not validation.
+    """
+    if not isinstance(sloppy_summary, ScoreSummary) or not isinstance(
+        careful_summary, ScoreSummary
+    ):
+        raise TypeError("summaries must come from summarize")
+    required = _require_min_gap(min_gap)
+    sloppy_rate = sloppy_summary.mismatch_rate
+    careful_rate = careful_summary.mismatch_rate
+    if sloppy_rate is None or careful_rate is None:
+        return DiscriminationResult(gap=None, passed=False, min_gap=required)
+    gap = sloppy_rate - careful_rate
+    return DiscriminationResult(gap=gap, passed=gap >= required, min_gap=required)
