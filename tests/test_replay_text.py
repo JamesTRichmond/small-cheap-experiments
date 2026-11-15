@@ -57,7 +57,7 @@ def test_screen_names_the_claim_the_refund_the_doubt_and_the_verdict() -> None:
     assert any(line.startswith("Whether stated doubt stopped anything:") for line in lines)
     assert any(line.startswith("Verdict:") for line in lines)
     assert "Structural validity: valid" in lines
-    assert "Integrity: not verified" in lines
+    assert any(line.startswith("Integrity: not verified") for line in lines)
     assert "Claim vs act: match" in lines
     assert "matched" not in format_triplet(_load("match"))
     assert len(lines) <= 16
@@ -259,7 +259,10 @@ def test_a_real_record_hash_is_still_not_verified(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("probe_runtime.hash_chain.record_hash", boom)
     text = format_triplet(sealed)
-    assert "Integrity: not verified" in text.splitlines()
+    integrity = [line for line in text.splitlines() if line.startswith("Integrity: ")]
+    assert len(integrity) == 1
+    assert integrity[0].startswith("Integrity: not verified")
+    assert sealed["integrity"]["record_hash"] in integrity[0]
     assert "Integrity: verified" not in text.splitlines()
     assert "BROKEN" not in text
 

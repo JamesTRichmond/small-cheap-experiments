@@ -10,5 +10,5 @@ Whether stated doubt stopped anything: no. claimed_uncertainty=unknown, constrai
 Verdict: not assessable.
 
 Structural validity: valid
-Integrity: not verified
+Integrity: not verified (stored prev_hash=genesis, stored record_hash=SYNTH-HASH-NOT-VERIFIED)
 Claim vs act: not assessable
