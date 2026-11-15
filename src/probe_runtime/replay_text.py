@@ -90,11 +90,18 @@ def format_triplet(
         _act_line(record),
         _doubt_line(record),
         _verdict_line(result),
-        "",
-        structural,
-        integrity,
-        claim_act,
     ]
+    why = _why_line(record, result)
+    if why is not None:
+        lines.append(why)
+    lines.extend(
+        [
+            "",
+            structural,
+            integrity,
+            claim_act,
+        ]
+    )
     if include_raw_json:
         lines.extend(["", _raw_json_block(record)])
     return "\n".join(lines) + "\n"
@@ -351,6 +358,79 @@ def _verdict_line(result: str) -> str:
     if result == "mismatch":
         return "Verdict: mismatch."
     return "Verdict: not assessable."
+
+
+def _why_line(record: dict[str, Any], result: str) -> str | None:
+    """One line for mismatch and not assessable. Shown, not scored.
+
+    Amounts and order ids are printed side by side when both sides have
+    them. This does not decide whether those values agree.
+    """
+    if result not in ("mismatch", "not assessable"):
+        return None
+    parts = _claim_why(record) + _act_why(record) + _side_by_side(record)
+    if result == "not assessable":
+        if _carried_verdicts(record):
+            parts.append("stored verdicts disagree")
+        else:
+            parts.append("no verdict stored")
+    if not parts:
+        return None
+    return "Why (shown, not scored): " + "; ".join(parts)
+
+
+def _claim_why(record: dict[str, Any]) -> list[str]:
+    claim = record.get("frame_claim")
+    if not isinstance(claim, dict):
+        return ["claim missing"]
+    parsed = claim.get("parsed")
+    if not isinstance(parsed, dict):
+        return ["claim unparseable", "parse error: parsed"]
+    errors: list[str] = []
+    if parsed.get("raw_parse_ok") is not True:
+        errors.append("raw_parse_ok")
+    if "would_proceed" not in parsed or parsed.get("would_proceed") is None:
+        errors.append("would_proceed")
+    if errors:
+        return ["claim unparseable", "parse error: " + ", ".join(errors)]
+    would = parsed.get("would_proceed")
+    if would is False:
+        return ["claim said DENY"]
+    if would is True:
+        return ["claim said PROCEED"]
+    return ["claim unparseable", "parse error: would_proceed"]
+
+
+def _act_why(record: dict[str, Any]) -> list[str]:
+    act = record.get("frame_act")
+    if not isinstance(act, dict):
+        return ["act missing"]
+    tool = act.get("tool_name")
+    tool_text = tool if isinstance(tool, str) and tool else None
+    executed = act.get("executed", _MISSING)
+    if executed is True and tool_text is not None:
+        return [f"act was {tool_text}"]
+    if executed is True:
+        return ["act was issued"]
+    if executed is False and tool_text is not None:
+        return [f"act was not issued ({tool_text})"]
+    if executed is False:
+        return ["act was not issued"]
+    if tool_text is not None:
+        return [f"act tool was {tool_text}"]
+    return ["act decision missing"]
+
+
+def _side_by_side(record: dict[str, Any]) -> list[str]:
+    surface = record.get("surface")
+    act = record.get("frame_act")
+    if not isinstance(surface, dict) or not isinstance(act, dict):
+        return []
+    lines: list[str] = []
+    for key in ("amount_minor", "order_id", "merchant_ref"):
+        if key in surface and key in act:
+            lines.append(f"{key} surface={_lit(surface[key])} act={_lit(act[key])}")
+    return lines
 
 
 def _id_line(record: dict[str, Any], key: str) -> str:
