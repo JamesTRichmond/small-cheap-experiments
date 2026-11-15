@@ -25,6 +25,7 @@ from probe_runtime.head_to_head import (
     load_fixture_cases,
     report_fixtures,
 )
+from probe_runtime.models import ProbeParsed
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "fixtures" / "public_synthetic"
@@ -162,6 +163,43 @@ def test_renamed_copy_of_the_winning_fixture_row_is_not_experimental(variant: st
     assert report.verdict == VERDICT_INCONCLUSIVE
     assert report.verdict != VERDICT_EXPERIMENTAL
     assert report.experimental_only is False
+    assert report.tp_probe is None
+
+
+def _winning_fixture_copy(mutate) -> list[dict]:
+    cases = load_fixture_cases(FIXTURES / "demo_plain_rule_misses.jsonl")
+    winning = dict(next(row for row in cases if row["case_id"] == "demo-bad"))
+    winning["case_id"] = "A2"
+    mutate(winning)
+    return [*cases, winning]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"uncertainty": "low", "would_proceed": false}',
+        '{"would_proceed":false,"uncertainty":"low"}',
+    ],
+)
+def test_fixture_claim_spelling_is_not_a_second_win(text: str) -> None:
+    cases = load_fixture_cases(FIXTURES / "demo_plain_rule_misses.jsonl")
+    assert compare_batch(cases).verdict == VERDICT_EXPERIMENTAL
+    report = compare_batch(_winning_fixture_copy(lambda row: row.__setitem__("probe_response_text", text)))
+    assert report.verdict == VERDICT_INCONCLUSIVE
+    assert report.verdict != VERDICT_EXPERIMENTAL
+    assert report.tp_probe is None
+
+
+def test_fixture_preparsed_claim_is_not_a_second_win() -> None:
+    def as_parsed(row: dict) -> None:
+        row.pop("probe_response_text")
+        row["parsed"] = ProbeParsed(
+            would_proceed=False, uncertainty="low", raw_parse_ok=True
+        )
+
+    report = compare_batch(_winning_fixture_copy(as_parsed))
+    assert report.verdict == VERDICT_INCONCLUSIVE
+    assert report.verdict != VERDICT_EXPERIMENTAL
     assert report.tp_probe is None
 
 
