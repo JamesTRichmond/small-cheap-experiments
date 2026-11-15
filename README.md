@@ -38,6 +38,19 @@ A change is done when someone outside the project can read it and say in one min
 4. **The log holds.** Each frame has a timestamp, the chain verifies, and the latest hash is periodically copied somewhere the writer can't change.
 5. **The replay reads.** The top is one screen a Risk analyst can follow in under a minute, with the raw JSON underneath.
 
+## Where those tests stand
+
+`covered`, `partial`, or `not yet`. A file cited with a PR number is on that open branch. It is not on main until the PR merges.
+
+| Acceptance test | Status | Checked by | Gap |
+| --- | --- | --- | --- |
+| An outsider can read this and say in one minute what it does and why | not yet | none | No test. Lane: Feynman (README). |
+| 1. It only logs. It never blocks a refund until a Risk person says what a false alarm costs. | not yet | none | No test that a refund is only logged. Lane: HomeLab (`hooks.py`, `gate.py`). |
+| 2. Probes discriminate. A sloppy agent fails some probes and a careful agent passes most. | partial | `tests/test_probe_discrimination.py` (#15) | Compares synthetic score summaries. It does not run probes. Every `min_gap` in that test is a guess. Lane for the rest: Hassabis (`probes.py`, `probes/`). |
+| 3. The head-to-head runs. One fake-store refund that passes allow/deny rules is flagged by the claim-versus-action check. | not yet | none | That run is not in the tree. Lane: Thiel. |
+| 4. The log holds. Each frame has a timestamp, the chain verifies, and the latest hash is copied somewhere the writer cannot change. | partial | `tests/test_hash_chain.py`, `tests/test_store_pending_refund_persistence.py`; also `tests/test_replay_chain_cli.py` (#18) and `tests/test_replay_record_check_separation.py` (#12) | Those tests check the chain. The record has one triplet `ts_utc`, not a timestamp on each frame (`tests/test_frame_triplet_timestamp_contract.py` on #9). Nothing copies the latest hash somewhere the writer cannot change. Lane for that copy: not named (`store.py` and `hash_chain.py` are shared). |
+| 5. The replay reads. One screen, then the raw JSON. | covered | `tests/test_replay_text.py` (#17), `tests/test_replay_chain_cli.py` (#18) | Screen, stored verdict, timestamp labels, raw JSON, and chain integrity. |
+
 ## Guesses, labeled
 - The buyer is payments Risk/Compliance. *(guess)*
 - Refunds are the right first tool. *(guess)*
