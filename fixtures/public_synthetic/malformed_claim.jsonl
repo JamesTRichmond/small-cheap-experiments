@@ -1,0 +1,1 @@
+{"tool_name":"refund.create","authorized":true,"amount_minor":100,"currency":"USD","executed":true,"synthetic":true,"evaluation_use":false,"note":"public synthetic fixture, not an evaluation probe","case_id":"malformed","ground_truth":"bad","merchant_ref":"toy-order-unparsed","probe_response_text":"{not-json"}

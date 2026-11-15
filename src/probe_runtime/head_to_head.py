@@ -91,6 +91,7 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -129,6 +130,9 @@ __all__ = (
     "claim_verdict",
     "verdict_source",
     "compare_batch",
+    "load_fixture_cases",
+    "report_fixtures",
+    "main",
 )
 
 # Declared toy ceiling. Not a Risk limit and not the refund.create schema.
@@ -897,3 +901,109 @@ def compare_batch(cases: Sequence[Mapping[str, Any]]) -> Comparison:
         verdict_source=verdict_source(),
         summary_module="not_used",
     )
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PROBES_DIR = _REPO_ROOT / "probes"
+_REPORT_NOTE = (
+    "Each file is its own batch. STOP is not cancelled by an experimental batch. "
+    "These fixtures are public and synthetic. They are not market evidence."
+)
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def refuse_private_probe_path(path: Path) -> None:
+    """Reject holdout and anything under probes/ before the file is read."""
+    resolved = path.resolve()
+    if "holdout" in resolved.parts:
+        raise SystemExit("refusing a holdout path")
+    probes = _PROBES_DIR.resolve()
+    if resolved == probes or probes in resolved.parents:
+        raise SystemExit("refusing the probes directory")
+
+
+def load_fixture_cases(path: Path) -> list[dict[str, Any]]:
+    """Load one public JSONL fixture. A bad line stays in the denominator.
+
+    A line that is not a JSON object becomes an unscorable refund case.
+    compare_batch then returns INCONCLUSIVE instead of dropping the line.
+    """
+    refuse_private_probe_path(path)
+    if not path.is_file():
+        raise SystemExit("fixture not found")
+    cases: list[dict[str, Any]] = []
+    for number, line in enumerate(_read_text(path).split("\n"), start=1):
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            item = None
+        if not isinstance(item, dict):
+            item = {
+                "case_id": f"line-{number}",
+                "ground_truth": "bad",
+                "tool_name": "refund.create",
+                "authorized": True,
+                "amount_minor": 100,
+                "currency": "USD",
+                "merchant_ref": "toy-merchant",
+                "executed": "not-a-bool",
+            }
+        cases.append(item)
+    return cases
+
+
+def _fixture_paths(args: Sequence[str]) -> list[Path]:
+    paths: list[Path] = []
+    for arg in args:
+        path = Path(arg)
+        refuse_private_probe_path(path)
+        if path.is_dir():
+            found = sorted(item for item in path.glob("*.jsonl") if item.is_file())
+            if not found:
+                raise SystemExit("fixture directory has no jsonl files")
+            for item in found:
+                refuse_private_probe_path(item)
+            paths.extend(found)
+        else:
+            paths.append(path)
+    return paths
+
+
+def report_fixtures(paths: Sequence[Path]) -> dict[str, Any]:
+    """Run compare_batch on each fixture. Batches are not collapsed."""
+    batches: list[dict[str, Any]] = []
+    for path in paths:
+        comparison = compare_batch(load_fixture_cases(path))
+        body = comparison.to_dict()
+        body["fixture"] = path.name
+        batches.append(body)
+    return {
+        "batches": batches,
+        "market_evidence": False,
+        "mode": "log_only",
+        "note": _REPORT_NOTE,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Print one JSON verdict per public fixture. STOP exits 0; it is a finding."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        print(
+            "usage: python -m probe_runtime.head_to_head FIXTURE_OR_DIR...",
+            file=sys.stderr,
+        )
+        return 2
+    report = report_fixtures(_fixture_paths(args))
+    json.dump(report, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
