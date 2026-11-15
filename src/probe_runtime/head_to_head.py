@@ -30,9 +30,21 @@ True. An unexecuted mismatch is ``contradiction_unexecuted`` and does not
 enter ``tp_probe``. Nimby chose that default, relayed by reviewer Nash. It
 is reversible and is not a decision James has confirmed.
 
-``case_id`` must be a non-empty string and unique in the batch. A missing,
-empty, or repeated id makes the batch INCONCLUSIVE, including when the
-repeated id carries a different payload.
+``case_id`` must be a non-empty string and unique after NFKC, strip, and
+casefold. ``A``, ``A ``, ``a``, and a compatibility lookalike are one id.
+A missing or blank id makes the batch INCONCLUSIVE. So does a second row
+with the same scored payload under any id, including a fresh one.
+
+The scored payload is JSON with sorted keys and no extra space. It omits
+``case_id``. It includes only the fields the comparison reads, when
+present: ``ground_truth``, ``tool_name``, ``authorized``, ``amount_minor``,
+``currency``, ``merchant_ref``, ``executed``, ``decision``, ``probe_arm``,
+``baseline_arm``, ``open_question``, ``order_id``, ``merchant_order_id``,
+``order_amount_minor``, ``billed_amount_minor``, ``probe_response_text``,
+``fixture_unlabeled``, and ``parsed`` as ``would_proceed``, ``uncertainty``,
+``raw_parse_ok``, ``goal_one_liner``, ``rationale_one_liner``. Labels and
+notes are not part of it. A manifest of expected ids and payload digests
+is not checked here.
 
 Text claims are checked against ``schemas/probe_response.schema.json``
 before they are scored. HomeLab #25 strictens ``parse_probe_response`` and
@@ -73,6 +85,7 @@ from __future__ import annotations
 
 import copy
 import json
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -610,23 +623,92 @@ def _performance(rows: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+# Fields that decide a row. case_id, labels, and notes are not in this list.
+SCORED_PAYLOAD_FIELDS = (
+    "ground_truth",
+    "tool_name",
+    "authorized",
+    "amount_minor",
+    "currency",
+    "merchant_ref",
+    "executed",
+    "decision",
+    "probe_arm",
+    "baseline_arm",
+    "open_question",
+    "order_id",
+    "merchant_order_id",
+    "order_amount_minor",
+    "billed_amount_minor",
+    "probe_response_text",
+    "fixture_unlabeled",
+)
+
+
+def _normalize_case_id(raw: object) -> str | None:
+    """NFKC, then strip, then casefold. Blank after that is a missing id."""
+    if type(raw) is not str:
+        return None
+    key = unicodedata.normalize("NFKC", raw).strip().casefold()
+    if key == "":
+        return None
+    return key
+
+
+def _payload_canon(case: Mapping[str, Any]) -> str:
+    """Sorted-key JSON of the scored fields. case_id is omitted."""
+    projection: dict[str, Any] = {}
+    for key in SCORED_PAYLOAD_FIELDS:
+        if key in case:
+            projection[key] = case[key]
+    parsed = case.get("parsed")
+    if isinstance(parsed, ProbeParsed):
+        projection["parsed"] = {
+            "goal_one_liner": parsed.goal_one_liner,
+            "rationale_one_liner": parsed.rationale_one_liner,
+            "raw_parse_ok": parsed.raw_parse_ok,
+            "uncertainty": parsed.uncertainty,
+            "would_proceed": parsed.would_proceed,
+        }
+    elif "parsed" in case:
+        projection["parsed"] = parsed
+    try:
+        return json.dumps(
+            projection, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+    except TypeError:
+        return f"unserializable:{id(case)}"
+
+
 def _identity_problems(cases: Sequence[Mapping[str, Any]]) -> list[str | None]:
-    """Missing, empty, or repeated case_id. Both copies of a repeat are marked."""
-    labels: list[str] = []
-    counts: dict[str, int] = {}
+    """Missing ids, normalized-id collisions, and identical scored payloads.
+
+    Both rows of a collision are marked. A fresh id does not save a copy.
+    """
+    keys: list[str | None] = []
+    payloads: list[str] = []
+    key_counts: dict[str, int] = {}
+    payload_counts: dict[str, int] = {}
     for case in cases:
-        raw = case.get("case_id") if isinstance(case, Mapping) else None
-        if type(raw) is not str or raw == "":
-            labels.append("")
+        if not isinstance(case, Mapping):
+            keys.append(None)
+            payloads.append(f"not-a-mapping:{id(case)}")
             continue
-        labels.append(raw)
-        counts[raw] = counts.get(raw, 0) + 1
+        key = _normalize_case_id(case.get("case_id"))
+        keys.append(key)
+        if key is not None:
+            key_counts[key] = key_counts.get(key, 0) + 1
+        payload = _payload_canon(case)
+        payloads.append(payload)
+        payload_counts[payload] = payload_counts.get(payload, 0) + 1
     problems: list[str | None] = []
-    for label in labels:
-        if label == "":
-            problems.append("missing_case_id")
-        elif counts[label] > 1:
+    for key, payload in zip(keys, payloads):
+        if key is not None and key_counts[key] > 1:
             problems.append("duplicate_case_id")
+        elif payload_counts[payload] > 1:
+            problems.append("duplicate_case_id")
+        elif key is None:
+            problems.append("missing_case_id")
         else:
             problems.append(None)
     return problems

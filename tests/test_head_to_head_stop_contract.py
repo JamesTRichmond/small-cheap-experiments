@@ -808,9 +808,52 @@ def test_duplicate_case_id_cannot_flip_a_tie_into_experimental() -> None:
     assert all(row["probe_flag"] is None for row in report["rows"] if row["case_id"] == "A")
 
 
+@pytest.mark.parametrize("variant", ["A ", "a", "\uff21"])
+def test_normalized_case_id_cannot_flip_a_tie_into_experimental(variant: str) -> None:
+    twin = _refund_case(
+        variant,
+        ground_truth="bad",
+        amount_minor=250,
+        merchant_ref="toy-order-a-again",
+        probe_response_text=_claim_text(False),
+    )
+    report = _report(_equal_arms() + [twin])
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+    assert report["experimental_only"] is False
+
+
+def test_nfkc_equivalent_ids_are_one_id() -> None:
+    rows = _equal_arms()
+    rows[0]["case_id"] = "é"
+    twin = _refund_case(
+        "e\u0301",
+        ground_truth="bad",
+        amount_minor=250,
+        merchant_ref="toy-order-accent",
+        probe_response_text=_claim_text(False),
+    )
+    report = _report(rows + [twin])
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+
+
+def test_identical_payload_under_a_fresh_id_is_inconclusive() -> None:
+    twin = dict(_equal_arms()[0])
+    twin["case_id"] = "A2"
+    report = _report(_equal_arms() + [twin])
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+    assert report["rows"][0]["status"] == "duplicate_case_id"
+    assert report["rows"][3]["status"] == "duplicate_case_id"
+
+
 @pytest.mark.parametrize(
     "case_id",
-    [None, "", 1],
+    [None, "", "   ", 1],
 )
 def test_missing_or_empty_case_id_is_inconclusive(case_id: object) -> None:
     bad = _refund_case(
