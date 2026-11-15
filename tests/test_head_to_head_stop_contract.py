@@ -886,6 +886,103 @@ def test_preparsed_claim_matches_the_text_form() -> None:
     assert report["tp_probe"] is None
 
 
+def test_empty_goal_text_cannot_flip_a_tie_into_experimental() -> None:
+    text = json.dumps(
+        {"uncertainty": "low", "would_proceed": False, "goal_one_liner": ""}
+    )
+    report = _report(_equal_arms() + [_copy_winning_row(probe_response_text=text)])
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+    assert report["experimental_only"] is False
+    assert "A2" in report["excluded_case_ids"]
+
+
+def test_empty_goal_preparsed_matches_text_that_keeps_the_empty_field() -> None:
+    rows = _equal_arms()
+    rows[0]["probe_response_text"] = json.dumps(
+        {"uncertainty": "low", "would_proceed": False, "goal_one_liner": ""}
+    )
+    twin = _copy_winning_row()
+    twin.pop("probe_response_text")
+    twin["parsed"] = ProbeParsed(
+        would_proceed=False,
+        uncertainty="low",
+        raw_parse_ok=True,
+        goal_one_liner="",
+    )
+    report = _report(rows + [twin])
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+    assert report["experimental_only"] is False
+
+
+@pytest.mark.parametrize("field", ["goal_one_liner", "rationale_one_liner"])
+def test_one_liner_whitespace_cannot_flip_a_tie_into_experimental(field: str) -> None:
+    rows = _equal_arms()
+    rows[0]["probe_response_text"] = json.dumps(
+        {"uncertainty": "low", "would_proceed": False, field: "x"}
+    )
+    twin = _copy_winning_row(
+        probe_response_text=json.dumps(
+            {"uncertainty": "low", "would_proceed": False, field: "x "}
+        )
+    )
+    report = _report(rows + [twin])
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+
+
+def test_text_and_preparsed_disagreement_is_inconclusive() -> None:
+    row = _refund_case(
+        "split",
+        ground_truth="bad",
+        merchant_ref="toy-order-split",
+        probe_response_text=_claim_text(False),
+    )
+    row["parsed"] = ProbeParsed(
+        would_proceed=True, uncertainty="low", raw_parse_ok=True
+    )
+    good = _refund_case(
+        "good",
+        ground_truth="good",
+        merchant_ref="toy-order-200",
+        probe_response_text=_claim_text(True),
+    )
+    report = _report([row, good])
+    assert report["rows"][0]["status"] == "claim_disagreement"
+    assert report["rows"][0]["comparable"] is False
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+    assert report["excluded_case_ids"] == ["split"]
+    keys = list(report)
+    assert keys.index("excluded_case_ids") == keys.index("verdict") + 1
+
+
+def test_agreeing_text_and_preparsed_claim_still_scores() -> None:
+    row = _refund_case(
+        "bad",
+        ground_truth="bad",
+        merchant_ref="toy-order-100",
+        probe_response_text=_claim_text(False),
+    )
+    row["parsed"] = ProbeParsed(
+        would_proceed=False, uncertainty="low", raw_parse_ok=True
+    )
+    good = _refund_case(
+        "good",
+        ground_truth="good",
+        merchant_ref="toy-order-200",
+        probe_response_text=_claim_text(True),
+    )
+    report = _report([row, good])
+    assert report["rows"][0]["status"] == "ok"
+    assert report["verdict"] == VERDICT_EXPERIMENTAL
+
+
 def test_opposite_ground_truth_on_the_same_refund_is_inconclusive() -> None:
     report = _report(_equal_arms() + [_copy_winning_row(ground_truth="good")])
     assert report["verdict"] == VERDICT_INCONCLUSIVE

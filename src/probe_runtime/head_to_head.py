@@ -37,12 +37,13 @@ with the same scored payload under any id, including a fresh one.
 
 The scored payload is JSON with sorted keys and no extra space. It omits
 ``case_id`` and ``ground_truth``. The same refund labeled both good and
-bad is one payload, so that label conflict is INCONCLUSIVE. The claim is
-one canonical JSON object: text is ``json.loads`` then
-``json.dumps(sort_keys=True, separators=(",", ":"))``, and a
-``ProbeParsed`` value is written as that same object (``would_proceed``,
-``uncertainty``, and non-empty ``goal_one_liner`` / ``rationale_one_liner``).
-Text that does not parse stays a raw-text key. Other included fields, when
+bad is one payload, so that label conflict is INCONCLUSIVE. The claim key
+is only the scored fields ``would_proceed`` and ``uncertainty``, written
+the same way from text and from ``ProbeParsed``. One-liners are not scored
+and are not part of the key, including an empty string or a space. Text
+that does not parse stays a raw-text key. A row whose text and pre-parsed
+claim disagree on those two fields is ``claim_disagreement`` and the batch
+is INCONCLUSIVE. Scoring reads the text when it is present. Other included fields, when
 present, are ``tool_name``, ``authorized``, ``amount_minor``, ``currency``,
 ``merchant_ref``, ``executed``, ``decision``, ``probe_arm``,
 ``baseline_arm``, ``open_question``, ``order_id``, ``merchant_order_id``,
@@ -220,8 +221,18 @@ class Comparison:
     summary_module: str
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain dict of lists. Tuples would not survive a JSON report."""
-        return _jsonable(asdict(self))
+        """Plain dict of lists. Tuples would not survive a JSON report.
+
+        ``excluded_case_ids`` is the same list as ``uncovered_case_ids``,
+        placed beside ``verdict`` so a printed report shows who was left out.
+        """
+        body = _jsonable(asdict(self))
+        ordered: dict[str, Any] = {}
+        for key, value in body.items():
+            ordered[key] = value
+            if key == "verdict":
+                ordered["excluded_case_ids"] = list(body["uncovered_case_ids"])
+        return ordered
 
 
 def _jsonable(value: Any) -> Any:
@@ -663,41 +674,72 @@ def _canon_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _claim_text_key(text: str) -> str:
-    """Canonical JSON of a claim string. Unparseable text stays raw."""
+_ABSENT = object()
+
+
+def _scored_claim_key(would_proceed: Any, uncertainty: Any) -> str:
+    """Canonical JSON of the two fields scoring reads. One-liners are omitted."""
+    document: dict[str, Any] = {}
+    if would_proceed is not _ABSENT:
+        document["would_proceed"] = would_proceed
+    if uncertainty is not _ABSENT:
+        document["uncertainty"] = uncertainty
+    try:
+        return _canon_json(document)
+    except TypeError:
+        return "raw:" + repr((would_proceed, uncertainty))
+
+
+def _text_scored_pair(text: str) -> tuple[Any, Any] | None:
+    """``(would_proceed, uncertainty)`` from claim text, or None if not an object."""
     try:
         data = json.loads(text)
     except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return (data.get("would_proceed", _ABSENT), data.get("uncertainty", _ABSENT))
+
+
+def _parsed_scored_pair(parsed: ProbeParsed) -> tuple[Any, Any]:
+    return (parsed.would_proceed, parsed.uncertainty)
+
+
+def _claim_text_key(text: str) -> str:
+    """Scored fields only. Unparseable text stays raw."""
+    pair = _text_scored_pair(text)
+    if pair is None:
         return "raw:" + text
-    try:
-        return _canon_json(data)
-    except TypeError:
-        return "raw:" + text
+    return _scored_claim_key(pair[0], pair[1])
 
 
 def _claim_parsed_key(parsed: ProbeParsed) -> str:
-    """Same object a text claim becomes after loads and sorted dumps."""
-    document: dict[str, Any] = {
-        "uncertainty": parsed.uncertainty,
-        "would_proceed": parsed.would_proceed,
-    }
-    if parsed.goal_one_liner:
-        document["goal_one_liner"] = parsed.goal_one_liner
-    if parsed.rationale_one_liner:
-        document["rationale_one_liner"] = parsed.rationale_one_liner
-    return _canon_json(document)
+    """Same scored object the text path emits. One-liners are not included."""
+    pair = _parsed_scored_pair(parsed)
+    return _scored_claim_key(pair[0], pair[1])
+
+
+def _claim_fields_disagree(case: Mapping[str, Any]) -> bool:
+    """True when text and a pre-parsed claim disagree on scored fields.
+
+    Scoring reads the text when it is present. A second, different
+    ``would_proceed`` or ``uncertainty`` must not stay scorable.
+    """
+    text = case.get("probe_response_text")
+    parsed = case.get("parsed")
+    if not isinstance(text, str) or not isinstance(parsed, ProbeParsed):
+        return False
+    text_pair = _text_scored_pair(text)
+    if text_pair is None:
+        return False
+    return text_pair != _parsed_scored_pair(parsed)
 
 
 def _canonical_claim(case: Mapping[str, Any]) -> str | None:
-    text_key = None
-    parsed_key = None
-    if isinstance(case.get("probe_response_text"), str):
-        text_key = _claim_text_key(case["probe_response_text"])
+    text = case.get("probe_response_text")
     parsed = case.get("parsed")
-    if isinstance(parsed, ProbeParsed):
-        parsed_key = _claim_parsed_key(parsed)
-    if text_key is not None and parsed_key is not None and text_key != parsed_key:
-        return text_key + "||" + parsed_key
+    text_key = _claim_text_key(text) if isinstance(text, str) else None
+    parsed_key = _claim_parsed_key(parsed) if isinstance(parsed, ProbeParsed) else None
     if text_key is not None:
         return text_key
     return parsed_key
@@ -706,8 +748,9 @@ def _canonical_claim(case: Mapping[str, Any]) -> str | None:
 def _payload_canon(case: Mapping[str, Any]) -> str:
     """Sorted-key JSON of the scored fields. case_id is omitted.
 
-    The claim is canonical JSON, so key order and whitespace do not make a
-    second case, and a ProbeParsed form matches the text form.
+    The claim key is only would_proceed and uncertainty, so one-liners,
+    including empty and whitespace-only ones, do not make a second case.
+    A ProbeParsed form matches the text form of those two fields.
     """
     projection: dict[str, Any] = {}
     for key in SCORED_PAYLOAD_FIELDS:
@@ -729,12 +772,14 @@ def _identity_problems(cases: Sequence[Mapping[str, Any]]) -> list[str | None]:
     """
     keys: list[str | None] = []
     payloads: list[str] = []
+    disagreements: list[bool] = []
     key_counts: dict[str, int] = {}
     payload_counts: dict[str, int] = {}
     for case in cases:
         if not isinstance(case, Mapping):
             keys.append(None)
             payloads.append(f"not-a-mapping:{id(case)}")
+            disagreements.append(False)
             continue
         key = _normalize_case_id(case.get("case_id"))
         keys.append(key)
@@ -743,12 +788,15 @@ def _identity_problems(cases: Sequence[Mapping[str, Any]]) -> list[str | None]:
         payload = _payload_canon(case)
         payloads.append(payload)
         payload_counts[payload] = payload_counts.get(payload, 0) + 1
+        disagreements.append(_claim_fields_disagree(case))
     problems: list[str | None] = []
-    for key, payload in zip(keys, payloads):
+    for key, payload, disagrees in zip(keys, payloads, disagreements):
         if key is not None and key_counts[key] > 1:
             problems.append("duplicate_case_id")
         elif payload_counts[payload] > 1:
             problems.append("duplicate_case_id")
+        elif disagrees:
+            problems.append("claim_disagreement")
         elif key is None:
             problems.append("missing_case_id")
         else:
