@@ -526,6 +526,8 @@ def _display_case_id(case: Mapping[str, Any]) -> str:
 
 def _run_case(case: Mapping[str, Any]) -> dict[str, Any]:
     case_id = _display_case_id(case)
+    if case.get("fixture_unlabeled") is True:
+        return _row(case_id, status="unlabeled_fixture", tool_name=case.get("tool_name"))
     try:
         working = copy.deepcopy(dict(case))
     except Exception:
@@ -925,11 +927,17 @@ def refuse_private_probe_path(path: Path) -> None:
         raise SystemExit("refusing the probes directory")
 
 
+def _public_synthetic_labels(item: Mapping[str, Any]) -> bool:
+    return item.get("synthetic") is True and item.get("evaluation_use") is False
+
+
 def load_fixture_cases(path: Path) -> list[dict[str, Any]]:
     """Load one public JSONL fixture. A bad line stays in the denominator.
 
     A line that is not a JSON object becomes an unscorable refund case.
     compare_batch then returns INCONCLUSIVE instead of dropping the line.
+    Every real row must say ``synthetic`` is true and ``evaluation_use`` is
+    false. A row without those labels is not scored.
     """
     refuse_private_probe_path(path)
     if not path.is_file():
@@ -952,6 +960,15 @@ def load_fixture_cases(path: Path) -> list[dict[str, Any]]:
                 "currency": "USD",
                 "merchant_ref": "toy-merchant",
                 "executed": "not-a-bool",
+                "synthetic": True,
+                "evaluation_use": False,
+            }
+        elif not _public_synthetic_labels(item):
+            kept = item.get("case_id")
+            item = {
+                "case_id": kept if type(kept) is str and kept else f"line-{number}",
+                "tool_name": item.get("tool_name"),
+                "fixture_unlabeled": True,
             }
         cases.append(item)
     return cases

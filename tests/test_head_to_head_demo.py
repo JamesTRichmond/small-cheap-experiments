@@ -149,6 +149,35 @@ def test_bad_fixture_line_counts_in_the_denominator(tmp_path: Path) -> None:
     assert batch["rows"][0]["status"] == "invalid_executed"
 
 
+def test_unlabeled_fixture_cannot_score_a_win(tmp_path: Path) -> None:
+    path = tmp_path / "unlabeled.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "case_id": "sneak",
+                "ground_truth": "bad",
+                "tool_name": "refund.create",
+                "authorized": True,
+                "amount_minor": 100,
+                "currency": "USD",
+                "merchant_ref": "toy-order-100",
+                "executed": True,
+                "probe_response_text": json.dumps(
+                    {"would_proceed": False, "uncertainty": "low"}
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    batch = report_fixtures([path])["batches"][0]
+    assert batch["rows"][0]["status"] == "unlabeled_fixture"
+    assert batch["rows"][0]["probe_flag"] is None
+    assert batch["verdict"] == VERDICT_INCONCLUSIVE
+    assert batch["tp_probe"] is None
+    assert batch["denominator"] == 1
+
+
 def test_usage_returns_2() -> None:
     proc = _run()
     assert proc.returncode == 2
