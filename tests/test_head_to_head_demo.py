@@ -21,6 +21,7 @@ from probe_runtime.head_to_head import (
     VERDICT_EXPERIMENTAL,
     VERDICT_INCONCLUSIVE,
     VERDICT_STOP,
+    compare_batch,
     load_fixture_cases,
     report_fixtures,
 )
@@ -147,6 +148,21 @@ def test_bad_fixture_line_counts_in_the_denominator(tmp_path: Path) -> None:
     assert batch["valid"] == 0
     assert batch["denominator"] == 1
     assert batch["rows"][0]["status"] == "invalid_executed"
+
+
+@pytest.mark.parametrize("variant", ["A ", "a", "\uff44emo-bad", "A2"])
+def test_renamed_copy_of_the_winning_fixture_row_is_not_experimental(variant: str) -> None:
+    cases = load_fixture_cases(FIXTURES / "demo_plain_rule_misses.jsonl")
+    winning = next(row for row in cases if row["case_id"] == "demo-bad")
+    base = compare_batch(cases)
+    assert base.verdict == VERDICT_EXPERIMENTAL
+    twin = dict(winning)
+    twin["case_id"] = variant
+    report = compare_batch([*cases, twin])
+    assert report.verdict == VERDICT_INCONCLUSIVE
+    assert report.verdict != VERDICT_EXPERIMENTAL
+    assert report.experimental_only is False
+    assert report.tp_probe is None
 
 
 def test_unlabeled_fixture_cannot_score_a_win(tmp_path: Path) -> None:
