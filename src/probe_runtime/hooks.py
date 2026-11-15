@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -138,3 +139,82 @@ def post_tool(
         "scores": scores,
     }
     return store.append(record)
+
+
+def call_refund_log_only(
+    refund: Callable[[], Any],
+    /,
+    *,
+    agent_id: str,
+    session_id: str,
+    tool_args: dict[str, Any],
+    amount_minor: int,
+    currency: str,
+    probe_response_text: str,
+    store: Any,
+    provider_status: str,
+    provider_ref: str | None = None,
+    trace: dict[str, Any] | None = None,
+) -> Any:
+    """Run one fake or real refund. Hooks only observe.
+
+    pre_tool and post_tool still raise when called on their own, including
+    TimeoutError. This wrapper catches that telemetry failure and still calls
+    refund once. The gate decision is recorded on trace and is not an input
+    to refund. Acceptance test 1: log only, until a Risk person names the
+    false-alarm cost.
+
+    TODO: Hinton's open question 1 is undecided. post_tool still stores
+    whatever resolve_constraint_action returns when the decision was
+    queue_human and the refund executed. Whether that row is a humility
+    failure in log-only mode is not decided here, and this wrapper does not
+    change the score.
+    """
+    observed: dict[str, Any] | None = None
+    pre_error: Exception | None = None
+    try:
+        observed = pre_tool(
+            agent_id=agent_id,
+            session_id=session_id,
+            tool_name="refund.create",
+            tool_args=tool_args,
+            amount_minor=amount_minor,
+            currency=currency,
+            probe_response_text=probe_response_text,
+            store=store,
+        )
+    except Exception as exc:
+        pre_error = exc
+
+    refund_error: Exception | None = None
+    result: Any = None
+    try:
+        result = refund()
+    except Exception as exc:
+        refund_error = exc
+
+    post_error: Exception | None = None
+    record = None
+    if observed is not None:
+        try:
+            record = post_tool(
+                triplet_id=observed["triplet_id"],
+                executed=refund_error is None,
+                provider_status=provider_status,
+                provider_ref=provider_ref,
+                store=store,
+            )
+        except Exception as exc:
+            post_error = exc
+
+    if trace is not None:
+        trace.clear()
+        trace["decision"] = None if observed is None else observed["decision"]
+        trace["triplet_id"] = None if observed is None else observed["triplet_id"]
+        trace["pre_error"] = pre_error
+        trace["post_error"] = post_error
+        trace["record"] = record
+
+    if refund_error is not None:
+        raise refund_error
+    return result
