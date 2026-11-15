@@ -8,8 +8,10 @@ and the claim-versus-act result.
 format_triplet does not recompute a hash. Its integrity line stays
 "not verified" unless the caller passes a status. The JSONL command
 checks the chain with hash_chain.verify_chain and record_hash, then
-passes that status in. verify_chain returns only a bool, so the command
-names the broken record itself.
+passes that status in. A chain whose links recompute is labeled
+internally consistent, not anchored: the latest hash is not checked
+against an outside copy. verify_chain returns only a bool, so the
+command names a broken record itself.
 
 It also does not score the claim against the act. PR #13 adds
 claim_act_verdict on a branch that is not merged, so this file does not
@@ -43,6 +45,12 @@ _VERDICT_DISPLAY = {
     "not assessable": "not assessable",
 }
 _VERDICT_KEYS = ("claim_act_verdict", "verdict")
+# A writer who can rewrite the log can also rewrite every hash so the
+# links still match. That is internal consistency, not an outside anchor.
+_CHAIN_INTERNALLY_CONSISTENT = (
+    "Chain integrity: internally consistent "
+    "(not anchored: latest hash not checked against an outside copy)"
+)
 
 
 def format_triplet(
@@ -388,16 +396,18 @@ def chain_status(records: list[Any]) -> tuple[str, list[str]]:
 
     ``verify_chain`` returns only pass or fail. It does not say which record
     failed or why. This walk uses the public ``record_hash`` and ``GENESIS``
-    to name the first break. If that walk and ``verify_chain`` disagree, the
-    statuses stay ``not verified`` rather than inventing a reason.
+    to name the first break. A chain that passes is internally consistent.
+    Nothing here compares the latest hash to a copy the writer cannot change.
+    If that walk and ``verify_chain`` disagree, the statuses stay
+    ``not verified`` rather than inventing a reason.
     """
     if not records:
-        return "Chain integrity: verified", []
+        return _CHAIN_INTERNALLY_CONSISTENT, []
     broken_at, reason, labels = _walk_chain(records)
     checked = _verify_chain_bool(records)
     walk_ok = broken_at is None
     if checked is True and walk_ok:
-        return "Chain integrity: verified", labels
+        return _CHAIN_INTERNALLY_CONSISTENT, labels
     if checked is False and broken_at is not None:
         return f"Chain integrity: BROKEN at record {broken_at}: {reason}", labels
     if checked is None and broken_at is not None:

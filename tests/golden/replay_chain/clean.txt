@@ -1,4 +1,4 @@
-Chain integrity: verified
+Chain integrity: internally consistent (not anchored: latest hash not checked against an outside copy)
 Records: 3
 
 --- record 1 ---

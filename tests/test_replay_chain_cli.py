@@ -32,10 +32,17 @@ def _render(name: str) -> str:
     return format_chain_file(GOLDEN / f"{name}.jsonl")
 
 
-def test_clean_chain_golden_is_verified() -> None:
+_CONSISTENT = (
+    "Chain integrity: internally consistent "
+    "(not anchored: latest hash not checked against an outside copy)\n"
+)
+
+
+def test_clean_chain_golden_is_internally_consistent() -> None:
     text = _render("clean")
     assert text == (GOLDEN / "clean.txt").read_text(encoding="utf-8")
-    assert text.startswith("Chain integrity: verified\n")
+    assert text.startswith(_CONSISTENT)
+    assert "Chain integrity: verified" not in text
     assert verify_chain(_load_jsonl("clean")) is True
     assert text.count("Integrity: verified") == 3
     assert "Integrity: not verified" not in text
@@ -112,11 +119,11 @@ def test_blank_lines_are_not_records() -> None:
     one = (GOLDEN / "clean.jsonl").read_text(encoding="utf-8").split("\n")[0]
     text = format_jsonl("\n" + one + "\n\n")
     assert "Records: 1\n" in text
-    assert text.startswith("Chain integrity: verified\n")
+    assert text.startswith(_CONSISTENT)
 
 
-def test_empty_file_is_an_empty_verified_chain() -> None:
-    assert format_jsonl("") == "Chain integrity: verified\nRecords: 0\n"
+def test_empty_file_is_internally_consistent_and_not_anchored() -> None:
+    assert format_jsonl("") == _CONSISTENT + "Records: 0\n"
 
 
 def test_usage_and_missing_file() -> None:
