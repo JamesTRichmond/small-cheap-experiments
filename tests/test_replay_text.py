@@ -1,7 +1,8 @@
 """Plain-text replay of one synthetic FrameTriplet.
 
-Fixtures are fake money and obvious stand-ins. A stored claim_act_mismatch
-of 0 is not treated as agreement unless the frames themselves compare.
+Fixtures are fake money and obvious stand-ins. The claim-versus-act line
+repeats a verdict the record already carries. A claim_act_mismatch of 0
+is not turned into a match here.
 """
 
 from __future__ import annotations
@@ -57,7 +58,8 @@ def test_screen_names_the_claim_the_refund_the_doubt_and_the_verdict() -> None:
     assert any(line.startswith("Verdict:") for line in lines)
     assert "Structural validity: valid" in lines
     assert "Integrity: not verified" in lines
-    assert "Claim vs act: matched" in lines
+    assert "Claim vs act: match" in lines
+    assert "matched" not in format_triplet(_load("match"))
     assert len(lines) <= 16
 
 
@@ -67,17 +69,28 @@ def test_not_assessable_golden_never_says_matched() -> None:
     assert "matched" not in text
 
 
-def test_unparseable_claim_is_never_matched() -> None:
-    record = _load("match")
+def _drop_verdicts(record: dict) -> dict:
+    record.pop("claim_act_verdict", None)
+    record.pop("verdict", None)
+    scores = record.get("scores")
+    if isinstance(scores, dict):
+        scores.pop("claim_act_verdict", None)
+        scores.pop("verdict", None)
+    return record
+
+
+def test_unparseable_claim_with_only_a_zero_score_is_not_assessable() -> None:
+    record = _drop_verdicts(_load("match"))
     record["frame_claim"]["parsed"]["raw_parse_ok"] = False
     record["scores"]["claim_act_mismatch"] = 0
     text = format_triplet(record)
     assert "Claim vs act: not assessable" in text.splitlines()
+    assert "Claim vs act: match" not in text.splitlines()
     assert "matched" not in text
 
 
 def test_zero_score_without_a_parsed_claim_is_not_assessable() -> None:
-    record = _load("match")
+    record = _drop_verdicts(_load("match"))
     del record["frame_claim"]["parsed"]
     record["scores"]["claim_act_mismatch"] = 0
     text = format_triplet(record)
@@ -85,8 +98,19 @@ def test_zero_score_without_a_parsed_claim_is_not_assessable() -> None:
     assert "matched" not in text
 
 
-def test_zero_score_that_disagrees_with_the_frames_is_not_assessable() -> None:
-    record = _load("mismatch")
+def test_zero_score_is_not_a_match_when_the_frames_agree() -> None:
+    record = _drop_verdicts(_load("match"))
+    record["scores"]["claim_act_mismatch"] = 0
+    text = format_triplet(record)
+    assert "would_proceed=true" in text
+    assert "issued a refund" in text
+    assert "Claim vs act: not assessable" in text.splitlines()
+    assert "Claim vs act: match" not in text.splitlines()
+    assert "matched" not in text
+
+
+def test_zero_score_is_not_a_match_when_the_frames_disagree() -> None:
+    record = _drop_verdicts(_load("mismatch"))
     record["scores"]["claim_act_mismatch"] = 0
     text = format_triplet(record)
     assert "would_proceed=false" in text
@@ -95,20 +119,62 @@ def test_zero_score_that_disagrees_with_the_frames_is_not_assessable() -> None:
     assert "matched" not in text
 
 
-def test_deny_and_no_refund_is_a_match() -> None:
-    record = _load("mismatch")
-    record["frame_act"]["executed"] = False
-    record["frame_act"]["provider_status"] = "not_sent"
-    record["frame_act"]["provider_ref"] = None
+def test_mismatch_bit_without_a_verdict_is_not_assessable() -> None:
+    record = _drop_verdicts(_load("mismatch"))
+    record["scores"]["claim_act_mismatch"] = 1
+    text = format_triplet(record)
+    assert "Claim vs act: not assessable" in text.splitlines()
+    assert "Claim vs act: mismatch" not in text.splitlines()
+
+
+def test_scores_carry_a_match_verdict() -> None:
+    record = _drop_verdicts(_load("match"))
+    record["scores"]["claim_act_verdict"] = "match"
     record["scores"]["claim_act_mismatch"] = 0
     text = format_triplet(record)
-    assert "did not issue a refund" in text
-    assert "Claim vs act: matched" in text.splitlines()
-    assert "No refund was issued." in text
+    assert "Claim vs act: match" in text.splitlines()
+    assert "Verdict: match." in text.splitlines()
+    assert "matched" not in text
+
+
+def test_record_carries_a_mismatch_verdict() -> None:
+    record = _drop_verdicts(_load("mismatch"))
+    record["claim_act_verdict"] = "mismatch"
+    record["scores"]["claim_act_mismatch"] = 0
+    text = format_triplet(record)
+    assert "Claim vs act: mismatch" in text.splitlines()
+    assert "Verdict: mismatch." in text.splitlines()
+    assert "matched" not in text
+
+
+def test_scores_verdict_key_is_displayed() -> None:
+    record = _drop_verdicts(_load("not_assessable"))
+    record["scores"]["verdict"] = "not_assessable"
+    record["scores"]["claim_act_mismatch"] = 0
+    text = format_triplet(record)
+    assert "Claim vs act: not assessable" in text.splitlines()
+    assert "matched" not in text
+
+
+def test_disagreeing_stored_verdicts_are_not_assessable() -> None:
+    record = _drop_verdicts(_load("match"))
+    record["claim_act_verdict"] = "mismatch"
+    record["scores"]["verdict"] = "match"
+    text = format_triplet(record)
+    assert "Claim vs act: not assessable" in text.splitlines()
+    assert "matched" not in text
+
+
+def test_unrecognized_verdict_is_not_assessable() -> None:
+    record = _drop_verdicts(_load("match"))
+    record["verdict"] = "matched"
+    text = format_triplet(record)
+    assert "Claim vs act: not assessable" in text.splitlines()
+    assert "Claim vs act: match" not in text.splitlines()
 
 
 def test_stated_doubt_that_stopped_the_refund() -> None:
-    record = _load("match")
+    record = _drop_verdicts(_load("match"))
     record["frame_claim"]["parsed"]["would_proceed"] = False
     record["frame_act"]["executed"] = False
     record["frame_act"]["provider_status"] = "not_sent"
@@ -122,7 +188,8 @@ def test_stated_doubt_that_stopped_the_refund() -> None:
     text = format_triplet(record)
     assert "Whether stated doubt stopped anything: yes." in text
     assert "Stated doubt stopped the refund." in text
-    assert "Claim vs act: matched" in text.splitlines()
+    assert "Claim vs act: not assessable" in text.splitlines()
+    assert "matched" not in text
 
 
 def test_missing_timestamp_is_labeled_and_not_guessed() -> None:

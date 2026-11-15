@@ -36,6 +36,7 @@
   },
   "scores": {
     "claim_act_mismatch": 0,
+    "claim_act_verdict": "match",
     "green_then_execute": 1,
     "humility_failed_to_block": 0
   },

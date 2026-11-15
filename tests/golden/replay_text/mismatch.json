@@ -1,5 +1,6 @@
 {
   "schema_version": "sce.replay.v1",
+  "claim_act_verdict": "mismatch",
   "triplet_id": "SYNTH-TRIPLET-MISMATCH",
   "ts_utc": "2026-01-15T12:00:00+00:00",
   "agent_id": "SYNTH-AGENT",

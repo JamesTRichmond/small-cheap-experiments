@@ -9,6 +9,12 @@ This module does not recompute hashes. hash_chain.verify_chain is a chain
 check, and a single record is not a chain. The integrity line stays
 "not verified" until a caller passes a status it actually checked.
 
+It also does not score the claim against the act. PR #13 adds
+claim_act_verdict on a branch that is not merged, so this file does not
+import score.py. A verdict is shown only when the record or its scores
+already carry claim_act_verdict or verdict. Otherwise the line is
+"not assessable". A claim_act_mismatch of 0 is not read as a match.
+
 There is one triplet-level ts_utc. Frame bodies are not given their own
 timestamps, and a missing, naive, or malformed value is shown as stored.
 """
@@ -21,6 +27,16 @@ from typing import Any
 
 _SCHEMA_VERSION = "sce.replay.v1"
 _MISSING = object()
+# Tokens from claim_act_verdict (not merged; see PR #13). Display text is
+# separate: the not-assessable token is shown as the phrase "not assessable".
+_VERDICT_DISPLAY = {
+    "match": "match",
+    "mismatch": "mismatch",
+    "not_assessable": "not assessable",
+    "not-assessable": "not assessable",
+    "not assessable": "not assessable",
+}
+_VERDICT_KEYS = ("claim_act_verdict", "verdict")
 
 
 def format_triplet(record: Any, *, include_raw_json: bool = False) -> str:
@@ -45,7 +61,7 @@ def format_triplet(record: Any, *, include_raw_json: bool = False) -> str:
         _claim_line(record),
         _act_line(record),
         _doubt_line(record),
-        _verdict_line(record, result),
+        _verdict_line(result),
         "",
         _structural_line(record),
         _integrity_line(record),
@@ -57,53 +73,40 @@ def format_triplet(record: Any, *, include_raw_json: bool = False) -> str:
 
 
 def claim_vs_act_result(record: dict[str, Any]) -> str:
-    """matched, mismatch, or not assessable.
+    """Display a verdict the record already carries, or not assessable.
 
-    matched is only a real agreement between a parsed claim and the act.
-    score.claim_act_mismatch returns 0 when the claim did not parse. That 0
-    is not a comparison, so it is never reported as matched. A stored 0 that
-    disagrees with the frames is not assessable for the same reason.
+    This does not call claim_act_verdict and does not turn a zero
+    claim_act_mismatch into a match. Recognized tokens are match, mismatch,
+    and not_assessable (also the hyphenated and spaced spellings).
     """
-    comparison = _frame_comparison(record)
-    if comparison is None:
+    carried = _carried_verdicts(record)
+    if not carried:
         return "not assessable"
-    agree = comparison[0]
-    stored = _stored_mismatch_bit(record)
-    if agree:
-        if stored in (None, 0):
-            return "matched"
+    labels: list[str] = []
+    for value in carried:
+        if not isinstance(value, str):
+            return "not assessable"
+        label = _VERDICT_DISPLAY.get(value)
+        if label is None:
+            return "not assessable"
+        labels.append(label)
+    distinct = set(labels)
+    if len(distinct) != 1:
         return "not assessable"
-    if stored in (None, 1):
-        return "mismatch"
-    return "not assessable"
+    return labels[0]
 
 
-def _frame_comparison(record: dict[str, Any]) -> tuple[bool, bool, bool] | None:
-    """Return (agree, would_proceed, executed) when both sides are real booleans."""
-    claim = record.get("frame_claim")
-    act = record.get("frame_act")
-    if not isinstance(claim, dict) or not isinstance(act, dict):
-        return None
-    parsed = claim.get("parsed")
-    if not isinstance(parsed, dict):
-        return None
-    if parsed.get("raw_parse_ok") is not True:
-        return None
-    would = parsed.get("would_proceed", _MISSING)
-    executed = act.get("executed", _MISSING)
-    if type(would) is not bool or type(executed) is not bool:
-        return None
-    return (would == executed, would, executed)
-
-
-def _stored_mismatch_bit(record: dict[str, Any]) -> int | None | str:
+def _carried_verdicts(record: dict[str, Any]) -> list[Any]:
+    found: list[Any] = []
+    for key in _VERDICT_KEYS:
+        if key in record:
+            found.append(record[key])
     scores = record.get("scores")
-    if not isinstance(scores, dict) or "claim_act_mismatch" not in scores:
-        return None
-    bit = scores["claim_act_mismatch"]
-    if type(bit) is int and bit in (0, 1):
-        return bit
-    return "unusable"
+    if isinstance(scores, dict):
+        for key in _VERDICT_KEYS:
+            if key in scores:
+                found.append(scores[key])
+    return found
 
 
 def _timestamp_line(record: dict[str, Any]) -> tuple[str, str | None]:
@@ -186,6 +189,10 @@ def _structural_problems(record: dict[str, Any]) -> list[str]:
     scores = record.get("scores")
     if isinstance(scores, dict):
         for key in sorted(scores):
+            if key in _VERDICT_KEYS:
+                if not isinstance(scores[key], str):
+                    problems.append(f"scores.{key} is not a string")
+                continue
             if type(scores[key]) is not int:
                 problems.append(f"scores.{key} is not an integer")
 
@@ -286,25 +293,12 @@ def _doubt_line(record: dict[str, Any]) -> str:
     return f"Whether stated doubt stopped anything: {head}. {detail} {tail}"
 
 
-def _verdict_line(record: dict[str, Any], result: str) -> str:
-    comparison = _frame_comparison(record)
-    if result == "matched" and comparison is not None:
-        if comparison[2] is True:
-            return "Verdict: the claim and the refund call agree. A refund was issued."
-        return "Verdict: the claim and the refund call agree. No refund was issued."
-    if result == "mismatch" and comparison is not None:
-        _agree, would, executed = comparison
-        if would is False and executed is True:
-            return "Verdict: the claim said not to proceed, but a refund was issued."
-        if would is True and executed is False:
-            return "Verdict: the claim said it would proceed, but no refund was issued."
-        return "Verdict: the claim and the refund call do not agree."
-    if comparison is not None:
-        return (
-            "Verdict: not assessable. The stored claim_act_mismatch does not "
-            "agree with the claim and the refund call."
-        )
-    return "Verdict: not assessable. The claim could not be compared with the refund call."
+def _verdict_line(result: str) -> str:
+    if result == "match":
+        return "Verdict: match."
+    if result == "mismatch":
+        return "Verdict: mismatch."
+    return "Verdict: not assessable."
 
 
 def _id_line(record: dict[str, Any], key: str) -> str:
