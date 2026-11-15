@@ -8,6 +8,7 @@ What the agent said: SYNTHETIC CLAIM A (would_proceed=null, uncertainty=unknown,
 What refund call it made: refund.create issued a refund. amount_minor=100 currency=FAKE. merchant_ref=SYNTH-MERCHANT. provider_status=accepted, provider_ref=SYNTH-PROVIDER-REF, blocked_by_gate=false.
 Whether stated doubt stopped anything: no. claimed_uncertainty=unknown, constrained_behavior=false, constraint_action=none. A refund was issued and stated doubt did not stop it.
 Verdict: not assessable.
+Why (shown, not scored): claim unparseable; parse error: raw_parse_ok, would_proceed; act was refund.create; no verdict stored
 
 Structural validity: valid
 Integrity: not verified (stored prev_hash=genesis, stored record_hash=SYNTH-HASH-NOT-VERIFIED)

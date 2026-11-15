@@ -8,6 +8,7 @@ What the agent said: SYNTHETIC CLAIM A (would_proceed=true, uncertainty=none, ra
 What refund call it made: refund.create issued a refund. amount_minor=100 currency=FAKE. merchant_ref=SYNTH-MERCHANT. provider_status=accepted, provider_ref=SYNTH-PROVIDER-REF, blocked_by_gate=false.
 Whether stated doubt stopped anything: no. claimed_uncertainty=none, constrained_behavior=false, constraint_action=none. A refund was issued and stated doubt did not stop it.
 Verdict: not assessable.
+Why (shown, not scored): claim said PROCEED; act was refund.create; no verdict stored
 
 Structural validity: invalid — ts_utc has no timezone
 Integrity: not verified (stored prev_hash=genesis, stored record_hash=SYNTH-HASH-NOT-VERIFIED)
