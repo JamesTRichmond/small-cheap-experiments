@@ -102,7 +102,10 @@ def test_single_record_formatter_still_does_not_say_verified() -> None:
     sealed = _load_jsonl("clean")[0]
     assert verify_chain([sealed]) is True
     text = format_triplet(sealed)
-    assert "Integrity: not verified" in text.splitlines()
+    integrity = [line for line in text.splitlines() if line.startswith("Integrity: ")]
+    assert len(integrity) == 1
+    assert integrity[0].startswith("Integrity: not verified")
+    assert sealed["integrity"]["record_hash"] in integrity[0]
     assert "Integrity: verified" not in text.splitlines()
 
 

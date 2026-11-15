@@ -6,7 +6,9 @@ and a verdict. Three labeled lines follow: structural validity, integrity,
 and the claim-versus-act result.
 
 format_triplet does not recompute a hash. Its integrity line stays
-"not verified" unless the caller passes a status. The JSONL command
+"not verified" unless the caller passes a status, and it prints the
+stored prev_hash and record_hash so a rewritten hash is visible.
+The JSONL command
 checks the chain with hash_chain.verify_chain and record_hash, then
 passes that status in. A chain whose links recompute is labeled
 internally consistent, not anchored: the latest hash is not checked
@@ -74,6 +76,9 @@ def format_triplet(
 
     ts_line, _ts_problem = _timestamp_line(record)
     result = claim_vs_act_result(record)
+    structural, integrity, claim_act = labeled_lines(
+        record, integrity_status=integrity_status
+    )
     lines = [
         "Replay screen",
         _id_line(record, "triplet_id"),
@@ -86,13 +91,9 @@ def format_triplet(
         _doubt_line(record),
         _verdict_line(result),
         "",
-        _structural_line(record),
-        (
-            f"Integrity: {integrity_status}"
-            if integrity_status is not None
-            else _integrity_line(record)
-        ),
-        f"Claim vs act: {result}",
+        structural,
+        integrity,
+        claim_act,
     ]
     if include_raw_json:
         lines.extend(["", _raw_json_block(record)])
@@ -238,8 +239,28 @@ def _structural_problems(record: dict[str, Any]) -> list[str]:
     return problems
 
 
+def labeled_lines(
+    record: dict[str, Any], *, integrity_status: str | None = None
+) -> tuple[str, str, str]:
+    """The three status lines the screen prints, in order.
+
+    Callers that parse the screen should get these same strings back.
+    """
+    if integrity_status is None:
+        integrity = _integrity_line(record)
+    else:
+        integrity = f"Integrity: {integrity_status}"
+    return (
+        _structural_line(record),
+        integrity,
+        f"Claim vs act: {claim_vs_act_result(record)}",
+    )
+
+
 def _integrity_line(record: dict[str, Any]) -> str:
     # No hash is recomputed here. Do not report this as verified.
+    # The stored hash strings are printed so a rewrite is visible on the
+    # top screen. This path does not check them.
     integrity = record.get("integrity", _MISSING)
     if integrity is _MISSING or integrity is None:
         return "Integrity: missing (not verified)"
@@ -247,7 +268,11 @@ def _integrity_line(record: dict[str, Any]) -> str:
         return "Integrity: malformed (not verified)"
     if "prev_hash" not in integrity or "record_hash" not in integrity:
         return "Integrity: hash fields missing (not verified)"
-    return "Integrity: not verified"
+    stored = (
+        f"stored prev_hash={_lit(integrity.get('prev_hash'))}, "
+        f"stored record_hash={_lit(integrity.get('record_hash'))}"
+    )
+    return f"Integrity: not verified ({stored})"
 
 
 def _claim_line(record: dict[str, Any]) -> str:
