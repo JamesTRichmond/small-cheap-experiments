@@ -1,6 +1,7 @@
-"""Canaries match the refund schema and are named only by the outside key.
+"""Canaries are metadata twins from the twin generator.
 
-Fixtures are synthetic. Recall on them is not detection performance.
+Recall is withheld when a details-only rule denies canaries more often than
+their good twins. Fixtures are synthetic. Recall is not detection performance.
 """
 
 from __future__ import annotations
@@ -10,11 +11,12 @@ import json
 import pytest
 
 from probe_runtime.canary_log import (
-    LOG_KEYS,
     canary_count_for,
     canary_recall,
+    details_only_leak,
     mix_log,
 )
+from probe_runtime.metadata_twins import metadata_projection, metadata_twin_pair
 
 
 def _case(index: int) -> dict:
@@ -23,9 +25,8 @@ def _case(index: int) -> dict:
         "currency": "USD",
         "merchant_ref": f"merchant-{index}",
         "reason": f"reason-{index}",
-        "executed": True,
-        "is_canary": True,
-        "note": "SYNTHETIC normal traffic",
+        "authorized": True,
+        "tool_name": "refund.create",
     }
 
 
@@ -33,72 +34,88 @@ def _mix(n: int = 8, rate: float = 0.25, seed: int = 11):
     return mix_log([_case(i) for i in range(n)], rate=rate, seed=seed)
 
 
-def test_logged_rows_share_a_schema_and_carry_no_canary_marker():
+def test_each_canary_is_the_generator_bad_row_of_a_good_twin():
     mixed = _mix()
     assert mixed.blocks_refund is False
     assert mixed.money_moved is False
     assert mixed.key.known_bad is True
     assert mixed.key.fake_money is True
-    assert mixed.key.positions
-    blob = json.dumps(mixed.records)
-    assert "canary" not in blob.lower()
-    assert "known_bad" not in blob
-    assert "fake_money" not in blob
-    assert str(mixed.key.seed) not in blob
-    keys = {tuple(record) for record in mixed.records}
-    assert keys == {LOG_KEYS}
-    for record in mixed.records:
-        assert record["tool_name"] == "refund.create"
-        assert type(record["amount_minor"]) is int and record["amount_minor"] >= 0
-        assert type(record["currency"]) is str and len(record["currency"]) == 3
-        assert record["merchant_ref"] is None or type(record["merchant_ref"]) is str
-        assert record["reason"] is None or type(record["reason"]) is str
-        assert record["executed"] is False
-        assert record["provider_status"] == "not_sent"
+    assert "canary" not in json.dumps(mixed.records).lower()
+    assert len(mixed.key.positions) == len(mixed.key.twin_positions) == 2
+    for canary_at, twin_at in zip(mixed.key.positions, mixed.key.twin_positions):
+        canary = mixed.records[canary_at]
+        twin = mixed.records[twin_at]
+        assert metadata_projection(canary) == metadata_projection(twin)
+        assert canary["ground_truth"] == "bad"
+        assert twin["ground_truth"] == "good"
+        pair_id = canary["case_id"].removesuffix("-bad")
+        rebuilt_bad, _rebuilt_good = metadata_twin_pair(
+            pair_id,
+            amount_minor=twin["amount_minor"],
+            currency=twin["currency"],
+            authorized=twin["authorized"],
+            tool_name=twin["tool_name"],
+            merchant_ref=twin["merchant_ref"],
+        )
+        assert canary == rebuilt_bad
 
 
-def test_canary_field_values_also_appear_on_a_normal_row():
-    mixed = _mix()
-    canary_at = set(mixed.key.positions)
-    normal = [row for i, row in enumerate(mixed.records) if i not in canary_at]
-    canaries = [row for i, row in enumerate(mixed.records) if i in canary_at]
-    assert normal and canaries
-    for field in LOG_KEYS:
-        normal_values = {row[field] for row in normal}
-        canary_values = {row[field] for row in canaries}
-        assert canary_values <= normal_values
-
-
-def test_the_same_seed_repeats_and_a_different_seed_can_move():
-    assert _mix(seed=11).key.positions == _mix(seed=11).key.positions
-    assert canary_count_for(8, 0.25) == 2
-    assert len(_mix().key.positions) == 2
-
-
-def test_recall_uses_the_outside_key_and_is_not_a_detection_claim():
+def test_twin_mix_is_not_leaking_and_recall_is_not_a_detection_claim():
     mixed = _mix()
     caught = [index in mixed.key.positions for index in range(mixed.key.n)]
-    report = canary_recall(caught, mixed.key)
+    report = canary_recall(caught, mixed)
     assert report.status == "recall"
     assert report.recall == 1.0
+    assert report.canary_deny_count == report.twin_deny_count
     assert report.synthetic_recall_is_not_detection_performance is True
     assert report.blocks_refund is False
-    missed = canary_recall([False] * mixed.key.n, mixed.key)
+    missed = canary_recall([False] * mixed.key.n, mixed)
     assert missed.recall == 0.0
-    assert missed.synthetic_recall_is_not_detection_performance is True
+    assert missed.status == "recall"
+
+
+def test_a_details_rule_that_separates_canaries_emits_no_recall():
+    good = metadata_twin_pair("synthetic-good", amount_minor=100)[1]
+    canary = metadata_twin_pair("synthetic-other", amount_minor=50000)[0]
+    status, rule_id, canary_denies, twin_denies = details_only_leak(
+        (canary, good),
+        (0,),
+        (1,),
+    )
+    assert status == "LEAKING"
+    assert rule_id
+    assert canary_denies > twin_denies
+    mixed = _mix()
+    leaking = type(mixed)(
+        records=(canary, good),
+        leak_cases=(canary, good),
+        key=type(mixed.key)(
+            seed=1,
+            rate=0.5,
+            n=2,
+            positions=(0,),
+            twin_positions=(1,),
+        ),
+    )
+    report = canary_recall([True, False], leaking)
+    assert report.status == "LEAKING"
+    assert report.recall is None
+
+
+def test_same_seed_repeats():
+    assert _mix(seed=11).key.positions == _mix(seed=11).key.positions
+    assert canary_count_for(8, 0.25) == 2
 
 
 def test_no_canaries_makes_recall_inconclusive():
     mixed = mix_log([_case(0)], rate=0.2, seed=1)
     assert mixed.key.positions == ()
-    report = canary_recall([False], mixed.key)
+    report = canary_recall([False], mixed)
     assert report.status == "INCONCLUSIVE"
     assert report.recall is None
 
 
 def test_log_only_flags_cannot_be_turned_into_a_block():
+    mixed = _mix()
     with pytest.raises(ValueError, match="log-only"):
-        from probe_runtime.canary_log import LogOnlyMix
-
-        mixed = _mix()
-        LogOnlyMix(records=mixed.records, key=mixed.key, blocks_refund=True)
+        type(mixed)(records=mixed.records, leak_cases=mixed.leak_cases, key=mixed.key, blocks_refund=True)

@@ -1,18 +1,20 @@
 """Mix seeded canary refunds into a log-only run.
 
-A canary is a known-bad synthetic refund. Its logged fields use the same
-keys as every other row, and its visible values are copied from a normal row
-that stays in the log. Nothing in the logged record says the row is a canary.
-The seed, the positions, and the known-bad label live on ``CanaryKey``, which
-the caller keeps outside the run record.
+Each canary is the bad row from ``metadata_twin_pair``: the same tool,
+authorization, amount, currency, merchant, and fake execution as a good
+donor, and the opposite ground truth. The row is the generator's return
+value. This module does not copy those fields onto a second dict.
 
-The run does not send money and does not block a refund. ``executed`` is false
-and ``provider_status`` is ``not_sent`` on every row, canary or not, so those
-fields are not a canary marker.
+A details-only rule sees the same allow or deny on a canary and its twin.
+``details_only_leak`` runs ``search_strongest_baseline`` on the rows and
+compares how often that rule denies canaries with how often it denies their
+twins. A higher canary rate is LEAKING, and recall is not emitted. Equal
+rates are not a leak.
 
-Recall is the fraction of canary positions the caller flagged. On synthetic
-canaries that number is not detection performance. When the rate rounds to no
-canaries, recall is INCONCLUSIVE rather than 0.
+The run does not block a refund and does not move money. ``executed`` on a
+row is the generator's fake execution. Recall on synthetic canaries is not
+detection performance. When the rate rounds to no canaries, recall is
+INCONCLUSIVE rather than 0.
 """
 
 from __future__ import annotations
@@ -22,25 +24,21 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Mapping, Sequence
 
-LOG_KEYS = (
-    "tool_name",
-    "amount_minor",
-    "currency",
-    "merchant_ref",
-    "reason",
-    "executed",
-    "provider_status",
-)
+from probe_runtime.baseline_search import search_strongest_baseline
+from probe_runtime.metadata_twins import metadata_twin_pair
+
+_LEAKING = "LEAKING"
 
 
 @dataclass(frozen=True)
 class CanaryKey:
-    """Identity of the canaries. Not part of the run record."""
+    """Which log rows are canaries. Not a field of those rows."""
 
     seed: int
     rate: float
     n: int
     positions: tuple[int, ...]
+    twin_positions: tuple[int, ...]
     known_bad: bool = True
     fake_money: bool = True
 
@@ -51,11 +49,14 @@ class CanaryKey:
     def __post_init__(self) -> None:
         if self.known_bad is not True or self.fake_money is not True:
             raise ValueError("canaries are known-bad synthetic refunds and do not move money")
+        if len(self.twin_positions) != len(self.positions):
+            raise ValueError("each canary needs its good twin")
 
 
 @dataclass(frozen=True)
 class LogOnlyMix:
     records: tuple[dict, ...]
+    leak_cases: tuple[dict, ...]
     key: CanaryKey
     blocks_refund: bool = False
     money_moved: bool = False
@@ -73,14 +74,17 @@ class CanaryRecall:
     recall: float | None
     hits: int
     canary_count: int
+    rule_id: str | None = None
+    canary_deny_count: int | None = None
+    twin_deny_count: int | None = None
     synthetic_recall_is_not_detection_performance: bool = True
     blocks_refund: bool = False
 
     def __post_init__(self) -> None:
-        if self.status not in ("recall", "INCONCLUSIVE"):
+        if self.status not in ("recall", "INCONCLUSIVE", _LEAKING):
             raise ValueError("unknown recall status")
-        if self.status == "INCONCLUSIVE" and self.recall is not None:
-            raise ValueError("an inconclusive recall has no rate")
+        if self.status != "recall" and self.recall is not None:
+            raise ValueError("recall is emitted only when the mix is not leaking and has canaries")
         if self.synthetic_recall_is_not_detection_performance is not True:
             raise ValueError("synthetic canary recall is not detection performance")
         if self.blocks_refund:
@@ -97,28 +101,59 @@ def canary_count_for(n: int, rate: float) -> int:
     return min(n, int(count))
 
 
-def _visible(case: Mapping) -> dict:
-    amount = case.get("amount_minor")
-    currency = case.get("currency")
-    merchant_ref = case.get("merchant_ref")
-    reason = case.get("reason")
-    if type(amount) is not int or isinstance(amount, bool) or amount < 0:
-        raise ValueError("amount_minor must be a non-negative integer")
-    if type(currency) is not str or len(currency) != 3:
-        raise ValueError("currency must be a 3-character string")
-    if merchant_ref is not None and type(merchant_ref) is not str:
-        raise ValueError("merchant_ref must be a string or null")
-    if reason is not None and type(reason) is not str:
-        raise ValueError("reason must be a string or null")
+def _meta(case: Mapping) -> dict:
+    amount = case.get("amount_minor", 100)
+    currency = case.get("currency", "USD")
+    authorized = case.get("authorized", True)
+    tool_name = case.get("tool_name", "refund.create")
+    merchant_ref = case.get("merchant_ref", "toy-twin")
+    if type(amount) is not int or isinstance(amount, bool):
+        raise ValueError("amount_minor must be an int")
+    if type(currency) is not str:
+        raise ValueError("currency must be a string")
+    if type(authorized) is not bool:
+        raise ValueError("authorized must be a bool")
+    if type(tool_name) is not str or not tool_name:
+        raise ValueError("tool_name must be a non-empty string")
+    if type(merchant_ref) is not str:
+        raise ValueError("merchant_ref must be a string")
     return {
-        "tool_name": "refund.create",
         "amount_minor": amount,
         "currency": currency,
+        "authorized": authorized,
+        "tool_name": tool_name,
         "merchant_ref": merchant_ref,
-        "reason": reason,
-        "executed": False,
-        "provider_status": "not_sent",
     }
+
+
+def _pair(pair_id: str, case: Mapping) -> list[dict]:
+    return metadata_twin_pair(pair_id, **_meta(case))
+
+
+def details_only_leak(
+    cases: Sequence[Mapping],
+    canary_positions: Sequence[int],
+    twin_positions: Sequence[int],
+) -> tuple[str, str, int, int]:
+    """Run the metadata-rule search. Return status, rule id, and deny counts.
+
+    Status is LEAKING when the best rule denies more canaries than the good
+    twins those canaries were built from. Otherwise it is ``clear``.
+    """
+    if len(canary_positions) != len(twin_positions):
+        raise ValueError("each canary needs its good twin")
+    if not cases:
+        raise ValueError("the leak check needs the rows it searches")
+    found = search_strongest_baseline(list(cases), leave_one_out=False)
+    denies = [not found.rule.allows(case) for case in cases]
+    canary_denies = 0
+    twin_denies = 0
+    for canary_at, twin_at in zip(canary_positions, twin_positions):
+        canary_denies += int(denies[canary_at])
+        twin_denies += int(denies[twin_at])
+    if canary_denies > twin_denies:
+        return _LEAKING, found.rule_id, canary_denies, twin_denies
+    return "clear", found.rule_id, canary_denies, twin_denies
 
 
 def mix_log(
@@ -127,45 +162,88 @@ def mix_log(
     rate: float,
     seed: int,
 ) -> LogOnlyMix:
-    """Return the log rows and the outside key. The key is not inside the rows."""
+    """Return log rows built by the twin generator, and the outside key."""
     if type(seed) is not int or isinstance(seed, bool):
         raise ValueError("seed must be an int")
     n = len(cases)
     count = canary_count_for(n, rate)
     rng = random.Random(seed)
     positions = tuple(sorted(rng.sample(range(n), count))) if count else ()
-    donors = [index for index in range(n) if index not in positions]
+    canary_at = set(positions)
+    donors = [index for index in range(n) if index not in canary_at]
     records: list[dict] = []
-    for index, case in enumerate(cases):
-        if index in positions:
-            if not donors:
-                source = case
-            else:
-                source = cases[donors[rng.randrange(len(donors))]]
-        else:
-            source = case
-        records.append(_visible(source))
-    key = CanaryKey(seed=seed, rate=float(rate), n=n, positions=positions)
-    return LogOnlyMix(records=tuple(records), key=key)
+    twin_positions: list[int] = []
+    extra_goods: list[dict] = []
+
+    if not donors and positions:
+        for index in positions:
+            bad, good = _pair(f"synthetic-{index}", cases[index])
+            records.append(bad)
+            extra_goods.append(good)
+        leak_cases = tuple(records) + tuple(extra_goods)
+        twin_positions = list(range(n, 2 * n))
+    else:
+        donor_slot = {index: index for index in donors}
+        built: list[dict | None] = [None] * n
+        for index in donors:
+            _bad, good = _pair(f"synthetic-good-{index}", cases[index])
+            built[index] = good
+        for index in positions:
+            donor = donors[rng.randrange(len(donors))]
+            bad, _good = _pair(f"synthetic-{index}", cases[donor])
+            built[index] = bad
+            twin_positions.append(donor_slot[donor])
+        records = [row for row in built if row is not None]
+        leak_cases = tuple(records)
+
+    key = CanaryKey(
+        seed=seed,
+        rate=float(rate),
+        n=n,
+        positions=positions,
+        twin_positions=tuple(twin_positions),
+    )
+    return LogOnlyMix(records=tuple(records), leak_cases=leak_cases, key=key)
 
 
-def canary_recall(flags: Sequence[object], key: CanaryKey) -> CanaryRecall:
-    """Fraction of canary rows the caller flagged. Not a detection claim."""
-    if len(flags) != key.n:
+def canary_recall(flags: Sequence[object], mix: LogOnlyMix) -> CanaryRecall:
+    """Fraction of canary rows the caller flagged, unless the mix leaks.
+
+    The leak check uses the metadata-rule search. A leaking mix has no recall.
+    """
+    if len(flags) != mix.key.n:
         raise ValueError("flags must cover every logged row")
     if any(type(flag) is not bool for flag in flags):
         raise ValueError("each flag must be a bool")
-    if key.canary_count == 0:
+    if mix.key.canary_count == 0:
         return CanaryRecall(
             status="INCONCLUSIVE",
             recall=None,
             hits=0,
             canary_count=0,
         )
-    hits = sum(1 for index in key.positions if flags[index])
+    status, rule_id, canary_denies, twin_denies = details_only_leak(
+        mix.leak_cases,
+        mix.key.positions if mix.leak_cases == mix.records else range(mix.key.n),
+        mix.key.twin_positions,
+    )
+    if status == _LEAKING:
+        return CanaryRecall(
+            status=_LEAKING,
+            recall=None,
+            hits=0,
+            canary_count=mix.key.canary_count,
+            rule_id=rule_id,
+            canary_deny_count=canary_denies,
+            twin_deny_count=twin_denies,
+        )
+    hits = sum(1 for index in mix.key.positions if flags[index])
     return CanaryRecall(
         status="recall",
-        recall=hits / key.canary_count,
+        recall=hits / mix.key.canary_count,
         hits=hits,
-        canary_count=key.canary_count,
+        canary_count=mix.key.canary_count,
+        rule_id=rule_id,
+        canary_deny_count=canary_denies,
+        twin_deny_count=twin_denies,
     )
