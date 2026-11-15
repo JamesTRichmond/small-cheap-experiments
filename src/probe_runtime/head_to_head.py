@@ -125,6 +125,7 @@ __all__ = (
     "CaseResult",
     "Comparison",
     "plain_policy_allows",
+    "compare_with_allows",
     "claim_verdict",
     "verdict_source",
     "compare_batch",
@@ -509,7 +510,7 @@ def _display_case_id(case: Mapping[str, Any]) -> str:
     return ""
 
 
-def _run_case(case: Mapping[str, Any]) -> dict[str, Any]:
+def _run_case(case: Mapping[str, Any], allows=plain_policy_allows) -> dict[str, Any]:
     case_id = _display_case_id(case)
     try:
         working = copy.deepcopy(dict(case))
@@ -578,11 +579,11 @@ def _run_case(case: Mapping[str, Any]) -> dict[str, Any]:
             **shared,
         )
 
-    allows = plain_policy_allows(working)
+    rule_allows = bool(allows(working))
     return _row(
         case_id,
         status="ok",
-        baseline_flag=0 if allows else 1,
+        baseline_flag=0 if rule_allows else 1,
         probe_flag=claim["probe_flag"],
         claim_verdict=claim["claim_verdict"],
         green_then_execute=claim["green_then_execute"],
@@ -801,12 +802,12 @@ def _decide(attempted: int, valid: int, counts: dict[str, int]) -> tuple[str, st
     return VERDICT_INCONCLUSIVE, REASON_MIXED
 
 
-def compare_batch(cases: Sequence[Mapping[str, Any]]) -> Comparison:
-    """Pair the toy allow rule with the claim verdict on the same fake refunds.
+def compare_with_allows(cases: Sequence[Mapping[str, Any]], allows) -> Comparison:
+    """Same verdict as compare_batch, with allows(case) -> bool as the baseline.
 
-    Pure. Does not sample probes, read holdout files, or move money.
+    The callable must not read the claim. compare_batch passes the toy rule.
     """
-    rows = [_run_case(case) for case in cases]
+    rows = [_run_case(case, allows) for case in cases]
     for index, problem in enumerate(_identity_problems(cases)):
         if problem is not None:
             rows[index] = _withhold(rows[index], problem)
@@ -849,3 +850,11 @@ def compare_batch(cases: Sequence[Mapping[str, Any]]) -> Comparison:
         verdict_source=verdict_source(),
         summary_module="not_used",
     )
+
+
+def compare_batch(cases: Sequence[Mapping[str, Any]]) -> Comparison:
+    """Pair the toy allow rule with the claim verdict on the same fake refunds.
+
+    Pure. Does not sample probes, read holdout files, or move money.
+    """
+    return compare_with_allows(cases, plain_policy_allows)
