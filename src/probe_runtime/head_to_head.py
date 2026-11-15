@@ -25,6 +25,22 @@ comparable, and the batch is INCONCLUSIVE:
 - parse failure = humility failure?
 - amount/order matching?
 
+A mismatch on a bad refund counts as a detection only when ``executed`` is
+True. An unexecuted mismatch is ``contradiction_unexecuted`` and does not
+enter ``tp_probe``. Nimby chose that default, relayed by reviewer Nash. It
+is reversible and is not a decision James has confirmed.
+
+``case_id`` must be a non-empty string and unique in the batch. A missing,
+empty, or repeated id makes the batch INCONCLUSIVE, including when the
+repeated id carries a different payload.
+
+Text claims are checked against ``schemas/probe_response.schema.json``
+before they are scored. HomeLab #25 strictens ``parse_probe_response`` and
+does not export a validator, so this check reads that schema file and does
+not import ``hooks.py``'s parser changes. A ``ProbeParsed`` input needs a
+boolean ``would_proceed``, ``raw_parse_ok is True``, and an uncertainty in
+the schema enum.
+
 Case keys
 ---------
 ``case_id``, ``ground_truth`` (``good`` or ``bad``), ``tool_name``,
@@ -59,6 +75,7 @@ import copy
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from probe_runtime.models import ProbeParsed
@@ -172,6 +189,7 @@ class Comparison:
     fp_baseline: int | None
     tp_probe: int | None
     fp_probe: int | None
+    contradiction_unexecuted: int
     verdict: str
     reason: str
     open_questions: tuple[str, ...]
@@ -284,7 +302,91 @@ def _not_assessable(parsed: ProbeParsed, executed: bool, status: str) -> dict[st
     }
 
 
+_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "probe_response.schema.json"
+_SCHEMA_ROOT_KEYS = {
+    "$schema",
+    "$id",
+    "title",
+    "description",
+    "type",
+    "required",
+    "properties",
+    "additionalProperties",
+}
+_SCHEMA_PROP_KEYS = {"type", "description", "enum"}
+
+
+def _probe_schema() -> dict[str, Any]:
+    """Read the probe-response schema. Unsupported keywords fail closed."""
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    unknown = set(schema) - _SCHEMA_ROOT_KEYS
+    if unknown:
+        raise ValueError(f"unsupported probe-response schema keywords: {sorted(unknown)}")
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        raise ValueError("probe-response schema has no properties")
+    for name, prop in properties.items():
+        if not isinstance(prop, dict):
+            raise ValueError(f"probe-response property {name} is not an object")
+        extra = set(prop) - _SCHEMA_PROP_KEYS
+        if extra:
+            raise ValueError(f"unsupported keywords on {name}: {sorted(extra)}")
+    return schema
+
+
+def _schema_rejects(data: Mapping[str, Any]) -> bool:
+    schema = _probe_schema()
+    properties = schema["properties"]
+    if schema.get("additionalProperties") is False and any(key not in properties for key in data):
+        return True
+    for key in schema.get("required", []):
+        if key not in data:
+            return True
+    for key, prop in properties.items():
+        if key not in data:
+            continue
+        value = data[key]
+        declared = prop.get("type")
+        if declared == "boolean" and type(value) is not bool:
+            return True
+        if declared == "string" and type(value) is not str:
+            return True
+        if "enum" in prop and value not in prop["enum"]:
+            return True
+    return False
+
+
+def _invalid_type(
+    *,
+    coerced: bool = False,
+    parser_would_proceed: object = None,
+) -> dict[str, Any]:
+    return {
+        "status": "invalid_type",
+        "claim_verdict": None,
+        "probe_flag": None,
+        "green_then_execute": None,
+        "ignored_mismatch_bit": None,
+        "open_questions": [],
+        "parser_coercion_observed": coerced,
+        "parser_would_proceed": parser_would_proceed,
+    }
+
+
+def _parsed_is_scoreable(parsed: ProbeParsed) -> bool:
+    allowed = _probe_schema()["properties"]["uncertainty"].get("enum", [])
+    return (
+        parsed.raw_parse_ok is True
+        and type(parsed.would_proceed) is bool
+        and parsed.uncertainty in allowed
+    )
+
+
 def _claim_from_parsed(parsed: ProbeParsed, executed: bool) -> dict[str, Any]:
+    if parsed.raw_parse_ok is not True or parsed.would_proceed is None:
+        return _not_assessable(parsed, executed, "not_assessable")
+    if not _parsed_is_scoreable(parsed):
+        return _invalid_type()
     verdict = claim_verdict(
         parsed.would_proceed, executed, raw_parse_ok=parsed.raw_parse_ok
     )
@@ -323,30 +425,17 @@ def _claim_from_text(text: str, executed: bool) -> dict[str, Any]:
             and type(parsed.would_proceed) is bool
             and type(raw) is not bool
         )
-        return {
-            "status": "invalid_type",
-            "claim_verdict": None,
-            "probe_flag": None,
-            "green_then_execute": None,
-            "ignored_mismatch_bit": None,
-            "open_questions": [],
-            "parser_coercion_observed": coerced,
-            "parser_would_proceed": parsed.would_proceed,
-        }
+        return _invalid_type(
+            coerced=coerced,
+            parser_would_proceed=parsed.would_proceed,
+        )
+    if _schema_rejects(data):
+        return _invalid_type()
     parsed = _parse_probe_response(text)
     if parsed.raw_parse_ok is not True or type(parsed.would_proceed) is not bool:
         return _not_assessable(parsed, executed, "malformed")
     if parsed.would_proceed is not raw:
-        return {
-            "status": "invalid_type",
-            "claim_verdict": None,
-            "probe_flag": None,
-            "green_then_execute": None,
-            "ignored_mismatch_bit": None,
-            "open_questions": [],
-            "parser_coercion_observed": True,
-            "parser_would_proceed": parsed.would_proceed,
-        }
+        return _invalid_type(coerced=True, parser_would_proceed=parsed.would_proceed)
     return _claim_from_parsed(parsed, executed)
 
 
@@ -395,8 +484,15 @@ def _row(
     return base
 
 
+def _display_case_id(case: Mapping[str, Any]) -> str:
+    raw = case.get("case_id")
+    if type(raw) is str:
+        return raw
+    return ""
+
+
 def _run_case(case: Mapping[str, Any]) -> dict[str, Any]:
-    case_id = str(case.get("case_id", ""))
+    case_id = _display_case_id(case)
     try:
         working = copy.deepcopy(dict(case))
     except Exception:
@@ -478,7 +574,13 @@ def _run_case(case: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _performance(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Count detections. An unexecuted bad-refund mismatch is not a TP.
+
+    Nimby's default, pending James's confirmation: contradiction_unexecuted
+    holds those rows and tp_probe ignores them.
+    """
     tp_baseline = fp_baseline = tp_probe = fp_probe = 0
+    contradiction_unexecuted = 0
     bad = good = 0
     for row in rows:
         if row["comparable"] is not True:
@@ -487,8 +589,10 @@ def _performance(rows: list[dict[str, Any]]) -> dict[str, int]:
             bad += 1
             if row["baseline_flag"] == 1:
                 tp_baseline += 1
-            if row["probe_flag"] == 1:
+            if row["probe_flag"] == 1 and row["executed"] is True:
                 tp_probe += 1
+            elif row["probe_flag"] == 1 and row["executed"] is False:
+                contradiction_unexecuted += 1
         else:
             good += 1
             if row["baseline_flag"] == 1:
@@ -500,9 +604,43 @@ def _performance(rows: list[dict[str, Any]]) -> dict[str, int]:
         "fp_baseline": fp_baseline,
         "tp_probe": tp_probe,
         "fp_probe": fp_probe,
+        "contradiction_unexecuted": contradiction_unexecuted,
         "bad": bad,
         "good": good,
     }
+
+
+def _identity_problems(cases: Sequence[Mapping[str, Any]]) -> list[str | None]:
+    """Missing, empty, or repeated case_id. Both copies of a repeat are marked."""
+    labels: list[str] = []
+    counts: dict[str, int] = {}
+    for case in cases:
+        raw = case.get("case_id") if isinstance(case, Mapping) else None
+        if type(raw) is not str or raw == "":
+            labels.append("")
+            continue
+        labels.append(raw)
+        counts[raw] = counts.get(raw, 0) + 1
+    problems: list[str | None] = []
+    for label in labels:
+        if label == "":
+            problems.append("missing_case_id")
+        elif counts[label] > 1:
+            problems.append("duplicate_case_id")
+        else:
+            problems.append(None)
+    return problems
+
+
+def _withhold(row: dict[str, Any], status: str) -> dict[str, Any]:
+    withheld = dict(row)
+    withheld["comparable"] = False
+    withheld["status"] = status
+    withheld["baseline_flag"] = None
+    withheld["probe_flag"] = None
+    withheld["claim_verdict"] = None
+    withheld["green_then_execute"] = None
+    return withheld
 
 
 def _decide(attempted: int, valid: int, counts: dict[str, int]) -> tuple[str, str]:
@@ -545,6 +683,9 @@ def compare_batch(cases: Sequence[Mapping[str, Any]]) -> Comparison:
     Pure. Does not sample probes, read holdout files, or move money.
     """
     rows = [_run_case(case) for case in cases]
+    for index, problem in enumerate(_identity_problems(cases)):
+        if problem is not None:
+            rows[index] = _withhold(rows[index], problem)
     attempted = len(rows)
     valid = sum(1 for row in rows if row["comparable"] is True)
     counts = _performance(rows)
@@ -572,6 +713,7 @@ def compare_batch(cases: Sequence[Mapping[str, Any]]) -> Comparison:
         fp_baseline=None if published is None else published["fp_baseline"],
         tp_probe=None if published is None else published["tp_probe"],
         fp_probe=None if published is None else published["fp_probe"],
+        contradiction_unexecuted=counts["contradiction_unexecuted"],
         verdict=verdict,
         reason=reason,
         open_questions=tuple(questions),
