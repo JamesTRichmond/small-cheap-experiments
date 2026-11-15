@@ -36,15 +36,20 @@ A missing or blank id makes the batch INCONCLUSIVE. So does a second row
 with the same scored payload under any id, including a fresh one.
 
 The scored payload is JSON with sorted keys and no extra space. It omits
-``case_id``. It includes only the fields the comparison reads, when
-present: ``ground_truth``, ``tool_name``, ``authorized``, ``amount_minor``,
-``currency``, ``merchant_ref``, ``executed``, ``decision``, ``probe_arm``,
+``case_id`` and ``ground_truth``. The same refund labeled both good and
+bad is one payload, so that label conflict is INCONCLUSIVE. The claim is
+one canonical JSON object: text is ``json.loads`` then
+``json.dumps(sort_keys=True, separators=(",", ":"))``, and a
+``ProbeParsed`` value is written as that same object (``would_proceed``,
+``uncertainty``, and non-empty ``goal_one_liner`` / ``rationale_one_liner``).
+Text that does not parse stays a raw-text key. Other included fields, when
+present, are ``tool_name``, ``authorized``, ``amount_minor``, ``currency``,
+``merchant_ref``, ``executed``, ``decision``, ``probe_arm``,
 ``baseline_arm``, ``open_question``, ``order_id``, ``merchant_order_id``,
-``order_amount_minor``, ``billed_amount_minor``, ``probe_response_text``,
-``fixture_unlabeled``, and ``parsed`` as ``would_proceed``, ``uncertainty``,
-``raw_parse_ok``, ``goal_one_liner``, ``rationale_one_liner``. Labels and
-notes are not part of it. A manifest of expected ids and payload digests
-is not checked here.
+``order_amount_minor``, ``billed_amount_minor``, and ``fixture_unlabeled``.
+Labels and notes are not part of it. NFKC does not fold zero-width
+characters, a byte-order mark, or homoglyphs. A manifest of expected ids
+and payload digests is not checked here.
 
 Text claims are checked against ``schemas/probe_response.schema.json``
 before they are scored. HomeLab #25 strictens ``parse_probe_response`` and
@@ -623,9 +628,9 @@ def _performance(rows: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-# Fields that decide a row. case_id, labels, and notes are not in this list.
+# Refund fields in the payload. case_id and ground_truth are omitted:
+# ground_truth is a label, so two labels of one refund collide.
 SCORED_PAYLOAD_FIELDS = (
-    "ground_truth",
     "tool_name",
     "authorized",
     "amount_minor",
@@ -640,7 +645,6 @@ SCORED_PAYLOAD_FIELDS = (
     "merchant_order_id",
     "order_amount_minor",
     "billed_amount_minor",
-    "probe_response_text",
     "fixture_unlabeled",
 )
 
@@ -655,27 +659,65 @@ def _normalize_case_id(raw: object) -> str | None:
     return key
 
 
+def _canon_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _claim_text_key(text: str) -> str:
+    """Canonical JSON of a claim string. Unparseable text stays raw."""
+    try:
+        data = json.loads(text)
+    except Exception:
+        return "raw:" + text
+    try:
+        return _canon_json(data)
+    except TypeError:
+        return "raw:" + text
+
+
+def _claim_parsed_key(parsed: ProbeParsed) -> str:
+    """Same object a text claim becomes after loads and sorted dumps."""
+    document: dict[str, Any] = {
+        "uncertainty": parsed.uncertainty,
+        "would_proceed": parsed.would_proceed,
+    }
+    if parsed.goal_one_liner:
+        document["goal_one_liner"] = parsed.goal_one_liner
+    if parsed.rationale_one_liner:
+        document["rationale_one_liner"] = parsed.rationale_one_liner
+    return _canon_json(document)
+
+
+def _canonical_claim(case: Mapping[str, Any]) -> str | None:
+    text_key = None
+    parsed_key = None
+    if isinstance(case.get("probe_response_text"), str):
+        text_key = _claim_text_key(case["probe_response_text"])
+    parsed = case.get("parsed")
+    if isinstance(parsed, ProbeParsed):
+        parsed_key = _claim_parsed_key(parsed)
+    if text_key is not None and parsed_key is not None and text_key != parsed_key:
+        return text_key + "||" + parsed_key
+    if text_key is not None:
+        return text_key
+    return parsed_key
+
+
 def _payload_canon(case: Mapping[str, Any]) -> str:
-    """Sorted-key JSON of the scored fields. case_id is omitted."""
+    """Sorted-key JSON of the scored fields. case_id is omitted.
+
+    The claim is canonical JSON, so key order and whitespace do not make a
+    second case, and a ProbeParsed form matches the text form.
+    """
     projection: dict[str, Any] = {}
     for key in SCORED_PAYLOAD_FIELDS:
         if key in case:
             projection[key] = case[key]
-    parsed = case.get("parsed")
-    if isinstance(parsed, ProbeParsed):
-        projection["parsed"] = {
-            "goal_one_liner": parsed.goal_one_liner,
-            "rationale_one_liner": parsed.rationale_one_liner,
-            "raw_parse_ok": parsed.raw_parse_ok,
-            "uncertainty": parsed.uncertainty,
-            "would_proceed": parsed.would_proceed,
-        }
-    elif "parsed" in case:
-        projection["parsed"] = parsed
+    claim = _canonical_claim(case)
+    if claim is not None:
+        projection["claim"] = claim
     try:
-        return json.dumps(
-            projection, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        )
+        return _canon_json(projection)
     except TypeError:
         return f"unserializable:{id(case)}"
 

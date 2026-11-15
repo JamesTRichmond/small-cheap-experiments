@@ -851,6 +851,48 @@ def test_identical_payload_under_a_fresh_id_is_inconclusive() -> None:
     assert report["rows"][3]["status"] == "duplicate_case_id"
 
 
+def _copy_winning_row(**changes: object) -> dict:
+    twin = dict(_equal_arms()[0])
+    twin["case_id"] = "A2"
+    twin.update(changes)
+    return twin
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        json.dumps({"uncertainty": "low", "would_proceed": False}),
+        '{"would_proceed":false,"uncertainty":"low"}',
+        '{ "would_proceed" : false , "uncertainty" : "low" }',
+    ],
+)
+def test_claim_spelling_cannot_flip_a_tie_into_experimental(text: str) -> None:
+    report = _report(_equal_arms() + [_copy_winning_row(probe_response_text=text)])
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+    assert report["experimental_only"] is False
+
+
+def test_preparsed_claim_matches_the_text_form() -> None:
+    twin = _copy_winning_row()
+    twin.pop("probe_response_text")
+    twin["parsed"] = ProbeParsed(
+        would_proceed=False, uncertainty="low", raw_parse_ok=True
+    )
+    report = _report(_equal_arms() + [twin])
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+
+
+def test_opposite_ground_truth_on_the_same_refund_is_inconclusive() -> None:
+    report = _report(_equal_arms() + [_copy_winning_row(ground_truth="good")])
+    assert report["verdict"] == VERDICT_INCONCLUSIVE
+    assert report["verdict"] != VERDICT_EXPERIMENTAL
+    assert report["tp_probe"] is None
+
+
 @pytest.mark.parametrize(
     "case_id",
     [None, "", "   ", 1],
